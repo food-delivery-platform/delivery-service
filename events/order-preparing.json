@@ -1,0 +1,9 @@
+{
+  "Records": [
+    {
+      "body": "{\"eventType\":\"order.preparing\",\"eventId\":\"evt_01J0XYZ1234ABCD\",\"timestamp\":\"2026-06-28T18:50:00.000Z\",\"orderId\":\"order-xyz\",\"customerId\":\"user-123\",\"restaurantId\":\"rest-456\",\"restaurantAddress\":{\"lat\":32.0853,\"lng\":34.7818,\"street\":\"Rothschild Blvd 1\",\"city\":\"Tel Aviv\"},\"deliveryAddress\":{\"addressId\":\"addr-789\",\"lat\":32.0742,\"lng\":34.7922,\"street\":\"Ben Yehuda St 44\",\"city\":\"Tel Aviv\"},\"estimatedPickupTime\":\"2026-06-28T19:05:00.000Z\",\"estimatedDeliveryTime\":\"2026-06-28T19:30:00.000Z\",\"items\":[{\"menuItemId\":\"item-1\",\"name\":\"Shakshuka\",\"quantity\":2,\"timeToPrepare\":15}],\"totalAmount\":78.50,\"currency\":\"ILS\",\"actorId\":\"SYSTEM\"}",
+      "receiptHandle": "receipt-handle-001",
+      "messageId": "msg-001"
+    }
+  ]
+}
