@@ -1,0 +1,12 @@
+import os
+
+AWS_REGION = os.environ.get("AWS_REGION", "eu-west-1")
+DYNAMODB_TABLE_ACTIVE_ORDERS = os.environ.get("DYNAMODB_TABLE_ACTIVE_ORDERS", "active_orders")
+DYNAMODB_TABLE_COURIER_STATES = os.environ.get("DYNAMODB_TABLE_COURIER_STATES", "courier_states")
+DYNAMODB_TABLE_ORDER_EVENTS = os.environ.get("DYNAMODB_TABLE_ORDER_EVENTS", "order_events")
+SNS_TOPIC_ARN_ORDER_EVENTS = os.environ.get("SNS_TOPIC_ARN_ORDER_EVENTS", "")
+SQS_QUEUE_URL_DELIVERY_EVENTS = os.environ.get("SQS_QUEUE_URL_DELIVERY_EVENTS", "")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
+ENVIRONMENT = os.environ.get("ENVIRONMENT", "dev")

@@ -1,0 +1,9 @@
+{
+  "Records": [
+    {
+      "body": "{\"eventType\":\"order.status.ready\",\"eventId\":\"evt_01J0XYZ5678ABCD\",\"timestamp\":\"2026-06-28T19:05:00.000Z\",\"orderId\":\"order-xyz\",\"restaurantId\":\"rest-456\",\"courierId\":\"courier-001\",\"actorId\":\"rest-456\"}",
+      "receiptHandle": "receipt-handle-003",
+      "messageId": "msg-003"
+    }
+  ]
+}
