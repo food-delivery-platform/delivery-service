@@ -2,7 +2,7 @@
 
 Handles the full delivery lifecycle for the Food Delivery Platform: GPS collection, courier proximity assignment, delivery stage transitions, and ETA calculations.
 
-**Runtime:** Node.js + Express · AWS Fargate (1–4 tasks, auto-scales at 70% CPU)  
+**Runtime:** Python + FastAPI · AWS Fargate (1–4 tasks, auto-scales at 70% CPU)  
 **Owned data:** DynamoDB `courier_states`, `active_orders`, `order_events` · Supabase `courier_locations`, `assignments`
 
 ---
@@ -11,16 +11,19 @@ Handles the full delivery lifecycle for the Food Delivery Platform: GPS collecti
 
 - [Overview](#overview)
 - [Why Fargate](#why-fargate)
+- [Project Structure](#project-structure)
+- [Getting Started](#getting-started)
 - [Internal Modules](#internal-modules)
-- [External DTOs](#external-dtos)
+- [API Reference](#api-reference)
+  - [REST Inbound](#rest-inbound)
   - [SQS Inbound — `delivery-events`](#sqs-inbound--delivery-events)
   - [SNS Outbound — `order-events`](#sns-outbound--order-events)
-  - [REST Inbound](#rest-inbound)
   - [REST Outbound](#rest-outbound)
   - [DynamoDB Write Shapes](#dynamodb-write-shapes)
   - [CloudWatch Custom Metrics](#cloudwatch-custom-metrics)
 - [Data Stores](#data-stores)
 - [Scaling & Resilience](#scaling--resilience)
+- [Environment Variables](#environment-variables)
 
 ---
 
@@ -31,7 +34,7 @@ The Delivery Service sits between the Order Service and couriers. It receives `o
 ```
 Order Service (SQS) → [Assignment Engine] → DynamoDB eligible_courier_ids
                                                     ↓
-                              Courier App polls GET /deliveries/available (30 s)
+                              Courier App polls GET /api/v1/deliveries/available (30 s)
                                                     ↓
                               Courier taps Accept → conditional DynamoDB write (first wins)
                                                     ↓
@@ -46,9 +49,96 @@ Order Service (SQS) → [Assignment Engine] → DynamoDB eligible_courier_ids
 
 Three constraints make Lambda unsuitable for this service:
 
-1. **In-process GPS sync scheduler** — a background job runs every 10 minutes to batch-sync courier GPS from DynamoDB to Supabase `courier_locations` for PostGIS spatial queries. Lambda's request-scoped model cannot host a recurring in-process job.
-2. **Waze API call chains** — assigning a courier requires calling Waze once per candidate (up to 20 calls per `order.preparing` event). A warm Express server avoids Lambda cold-start latency on this critical path.
-3. **Persistent PostgreSQL connection pool** — PostGIS nearest-courier queries benefit from a warm `pg-pool`; reconnecting on every invocation adds measurable latency.
+1. **In-process GPS sync scheduler** — a background job runs every 10 minutes to batch-sync courier GPS from DynamoDB to Supabase `courier_locations` for PostGIS spatial queries. Lambda's request-scoped model cannot host a recurring in-process job. Python's `APScheduler` runs inside the same uvicorn process.
+2. **Waze API call chains** — assigning a courier requires calling Waze once per candidate (up to 20 calls per `order.preparing` event). A warm FastAPI/uvicorn server avoids Lambda cold-start latency on this critical path.
+3. **Persistent PostgreSQL connection pool** — PostGIS nearest-courier queries benefit from a warm `asyncpg` connection pool; reconnecting on every Lambda invocation adds measurable latency.
+
+---
+
+## Project Structure
+
+```
+delivery-service/
+├── requirements.txt
+├── README.md
+│
+├── events/                         # Local test payloads
+│   ├── order-preparing.json
+│   ├── order-cancelled.json
+│   ├── order-status-ready.json
+│   ├── accept-delivery.json
+│   ├── update-delivery-stage.json
+│   └── update-courier-location.json
+│
+└── src/
+    ├── main.py                     # FastAPI app + lifespan (scheduler, SQS consumer)
+    │
+    ├── api/
+    │   └── routes/
+    │       ├── deliveries.py       # GET/POST /api/v1/deliveries/*
+    │       ├── couriers.py         # PATCH /api/v1/couriers/{id}/gps
+    │       ├── events.py           # POST /internal/events (order event processing)
+    │       └── health.py           # GET /health
+    │
+    ├── modules/
+    │   ├── deliveries/
+    │   │   ├── api/dtos.py         # Pydantic request/response schemas (camelCase JSON)
+    │   │   ├── model/
+    │   │   │   ├── delivery.py
+    │   │   │   ├── delivery_stage.py
+    │   │   │   └── delivery_address.py
+    │   │   ├── repository/         # DynamoDB + Supabase reads/writes
+    │   │   ├── service/            # Assignment engine, stage machine
+    │   │   └── validation/
+    │   │
+    │   ├── couriers/
+    │   │   ├── api/dtos.py
+    │   │   ├── model/
+    │   │   │   ├── courier_state.py
+    │   │   │   ├── courier_location.py
+    │   │   │   └── vehicle_type.py
+    │   │   ├── repository/
+    │   │   └── service/
+    │   │
+    │   └── events/
+    │       ├── model/
+    │       │   ├── order_event.py  # Inbound SQS event schemas (Pydantic)
+    │       │   └── delivery_event.py  # Outbound SNS event schemas
+    │       ├── consumer/           # SQS polling background task
+    │       └── publisher/          # SNS publish helpers
+    │
+    └── shared/
+        ├── config/env.py           # Environment variables
+        ├── aws/
+        │   ├── dynamodb_client.py
+        │   ├── sns_client.py
+        │   └── sqs_client.py
+        ├── db/supabase_client.py
+        ├── errors/app_error.py
+        ├── http/api_response.py    # FastAPI JSONResponse helpers
+        └── utils/
+```
+
+---
+
+## Getting Started
+
+```bash
+# 1. Create and activate virtual environment
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
+# 2. Install dependencies
+pip install -r requirements.txt
+
+# 3. Configure environment (copy and fill in values)
+cp .env.example .env
+
+# 4. Run the development server
+uvicorn src.main:app --reload --port 8000
+```
+
+Interactive API docs available at `http://localhost:8000/docs`.
 
 ---
 
@@ -56,214 +146,19 @@ Three constraints make Lambda unsuitable for this service:
 
 | Module | Trigger | Responsibility |
 |--------|---------|----------------|
-| **GPS handler** | `PATCH /couriers/{id}/gps` every 10 s | Writes courier position to DynamoDB `courier_states.lastLocation` |
-| **GPS sync scheduler** | In-process `setInterval`, every 10 min | Reads all active courier GPS from DynamoDB; batch-upserts PostGIS geometry to Supabase `courier_locations` |
-| **ETA handler** | `GET /deliveries/eta` | Calls Waze for restaurant→customer travel time; returned to Order Service before checkout |
-| **SQS consumer** | SQS Standard `delivery-events` | Routes `order.preparing` → Assignment Engine; `order.cancelled` → release courier; `order.status.ready` → update broadcast status |
+| **GPS handler** | `PATCH /api/v1/couriers/{id}/gps` every 10 s | Writes courier position to DynamoDB `courier_states.lastLocation` |
+| **GPS sync scheduler** | APScheduler in-process job, every 10 min | Reads all active courier GPS from DynamoDB; batch-upserts PostGIS geometry to Supabase `courier_locations` |
+| **ETA handler** | `GET /api/v1/deliveries/eta` | Calls Waze for restaurant→customer travel time; returned to Order Service before checkout |
+| **SQS consumer** | Background task polling SQS Standard `delivery-events` | Routes `order.preparing` → Assignment Engine; `order.cancelled` → release courier; `order.status.ready` → update broadcast status |
 | **Assignment engine** | `order.preparing` event | (1) PostGIS: 20 nearest couriers to restaurant, (2) Waze per courier for arrival time, (3) keep those ≤ threshold, (4) write `eligible_courier_ids` to DynamoDB |
-| **Poll handler** | `GET /deliveries/available` every 30 s | Returns paid orders for which this courier appears in `eligible_courier_ids` |
-| **Accept handler** | `POST /deliveries/{id}/accept` | Conditional DynamoDB write (`attribute_not_exists(assignedCourierId)`); 409 if another courier already accepted |
+| **Poll handler** | `GET /api/v1/deliveries/available` every 30 s | Returns paid orders for which this courier appears in `eligible_courier_ids` |
+| **Accept handler** | `POST /api/v1/deliveries/{id}/accept` | Conditional DynamoDB write (`attribute_not_exists(assignedCourierId)`); 409 if another courier already accepted |
 | **Stage state machine** | Courier `POST /stage`; Customer `POST /confirm-delivery` | `ASSIGNED → PICKED_UP → DELIVERED / FAILED`; writes `order_events` audit log; publishes to SNS; calls Order Service status patch |
 | **Health check** | `GET /health` | ALB target group readiness probe |
 
 ---
 
-## External DTOs
-
-### SQS Inbound — `delivery-events`
-
-Messages consumed from the `delivery-events` SQS Standard queue (fan-out from SNS Standard topic `order-events`). DLQ triggers after **3 consecutive processing failures**. Duplicates are handled by checking current order state before acting.
-
----
-
-#### `order.preparing`
-
-Published by Order Service (Step Functions) on payment confirmation. Triggers the Assignment Engine.
-
-```json
-{
-  "eventType": "order.preparing",
-  "eventId": "evt_01J0XYZ1234ABCD",
-  "timestamp": "2026-06-28T18:50:00.000Z",
-  "orderId": "order-xyz",
-  "customerId": "user-123",
-  "restaurantId": "rest-456",
-  "restaurantAddress": {
-    "lat": 32.0853,
-    "lng": 34.7818,
-    "street": "Rothschild Blvd 1",
-    "city": "Tel Aviv"
-  },
-  "deliveryAddress": {
-    "addressId": "addr-789",
-    "lat": 32.0742,
-    "lng": 34.7922,
-    "street": "Ben Yehuda St 44",
-    "city": "Tel Aviv"
-  },
-  "estimatedPickupTime": "2026-06-28T19:05:00.000Z",
-  "estimatedDeliveryTime": "2026-06-28T19:30:00.000Z",
-  "items": [
-    { "menuItemId": "item-1", "name": "Shakshuka", "quantity": 2, "timeToPrepare": 15 }
-  ],
-  "totalAmount": 78.50,
-  "currency": "ILS",
-  "actorId": "SYSTEM"
-}
-```
-
----
-
-#### `order.cancelled`
-
-Published by Order Service on payment failure or invalid order. The service releases any pre-assigned courier.
-
-```json
-{
-  "eventType": "order.cancelled",
-  "eventId": "evt_01J0XYZ9999ABCD",
-  "timestamp": "2026-06-28T18:55:00.000Z",
-  "orderId": "order-xyz",
-  "reason": "PAYMENT_FAILED",
-  "actorId": "SYSTEM"
-}
-```
-
-`reason` enum: `PAYMENT_FAILED` · `INVALID_ORDER` · `CUSTOMER_CANCELLED`
-
----
-
-#### `order.status.ready`
-
-Published by Order Service when the kitchen marks the order ready. Updates the broadcast status so the assigned courier knows food is ready for pickup.
-
-```json
-{
-  "eventType": "order.status.ready",
-  "eventId": "evt_01J0XYZ5678ABCD",
-  "timestamp": "2026-06-28T19:05:00.000Z",
-  "orderId": "order-xyz",
-  "restaurantId": "rest-456",
-  "courierId": "courier-001",
-  "actorId": "rest-456"
-}
-```
-
----
-
-### SNS Outbound — `order-events`
-
-All events published to SNS Standard topic `order-events`.  
-`SNSTopicArn`: `arn:aws:sns:eu-west-1:123456789012:order-events`  
-Consumers: Notification Service · Monitoring Service · Order Service.
-
----
-
-#### `delivery.courier_assigned`
-
-Emitted after the Assignment Engine selects a courier (first-accept-wins).
-
-```json
-{
-  "eventType": "delivery.courier_assigned",
-  "eventId": "evt_01J0DS1234ABCD",
-  "timestamp": "2026-06-28T18:51:00.000Z",
-  "orderId": "order-xyz",
-  "courierId": "courier-001",
-  "courierName": "Avi Cohen",
-  "courierPhone": "+972501234567",
-  "vehicleType": "bike",
-  "estimatedPickupTime": "2026-06-28T19:05:00.000Z",
-  "estimatedDeliveryTime": "2026-06-28T19:30:00.000Z",
-  "actorId": "SYSTEM"
-}
-```
-
-`vehicleType` enum: `bike` · `car` · `walk`
-
----
-
-#### `delivery.status.picked_up`
-
-Courier taps **Picked up**. Stage transition: `ASSIGNED → PICKED_UP`.
-
-```json
-{
-  "eventType": "delivery.status.picked_up",
-  "eventId": "evt_01J0DS2222ABCD",
-  "timestamp": "2026-06-28T19:07:00.000Z",
-  "orderId": "order-xyz",
-  "courierId": "courier-001",
-  "actorId": "courier-001"
-}
-```
-
----
-
-#### `delivery.status.delivered`
-
-Both courier and customer confirm delivery. Stage transition: `PICKED_UP → DELIVERED`. Terminal event.
-
-```json
-{
-  "eventType": "delivery.status.delivered",
-  "eventId": "evt_01J0DS4444ABCD",
-  "timestamp": "2026-06-28T19:28:00.000Z",
-  "orderId": "order-xyz",
-  "courierId": "courier-001",
-  "courierConfirmed": true,
-  "customerConfirmed": true,
-  "confirmedBy": "COURIER",
-  "actualDeliveryTime": "2026-06-28T19:28:00.000Z",
-  "actorId": "courier-001"
-}
-```
-
-`confirmedBy`: `COURIER` · `CUSTOMER` — records which party triggered the final status push.
-
----
-
-#### `delivery.status.failed`
-
-Courier reports failure. Stage transition: `PICKED_UP → FAILED`.
-
-```json
-{
-  "eventType": "delivery.status.failed",
-  "eventId": "evt_01J0DS5555ABCD",
-  "timestamp": "2026-06-28T19:35:00.000Z",
-  "orderId": "order-xyz",
-  "courierId": "courier-001",
-  "failureReason": "CUSTOMER_UNREACHABLE",
-  "failureNote": "Rang doorbell 3 times, no answer. Tried calling.",
-  "actorId": "courier-001"
-}
-```
-
-`failureReason` enum: `CUSTOMER_UNREACHABLE` · `WRONG_ADDRESS` · `ACCESS_DENIED` · `CUSTOMER_REFUSED` · `OTHER`
-
----
-
-#### `delivery.courier_reassigned`
-
-Emitted when the original courier cancels or becomes unresponsive mid-delivery.
-
-```json
-{
-  "eventType": "delivery.courier_reassigned",
-  "eventId": "evt_01J0DS6666ABCD",
-  "timestamp": "2026-06-28T19:10:00.000Z",
-  "orderId": "order-xyz",
-  "previousCourierId": "courier-001",
-  "newCourierId": "courier-007",
-  "reason": "COURIER_CANCELLED",
-  "actorId": "SYSTEM"
-}
-```
-
-`reason` enum: `COURIER_CANCELLED` · `COURIER_UNRESPONSIVE` · `MANUAL_OPS`
-
----
+## API Reference
 
 ### REST Inbound
 
@@ -273,9 +168,9 @@ Exposed via ALB (Fargate target group). Courier App endpoints require `Authoriza
 
 #### `PATCH /api/v1/couriers/{courierId}/gps`
 
-Courier App sends GPS position every 10 seconds. Writes to DynamoDB `courier_states.lastLocation` (live source of truth). Supabase `courier_locations` is batch-synced from DynamoDB every 10 minutes.
+Courier App sends GPS position every 10 seconds. Writes to DynamoDB `courier_states.lastLocation`.
 
-**Request**
+**Request body**
 ```json
 {
   "lat": 32.0800,
@@ -284,42 +179,33 @@ Courier App sends GPS position every 10 seconds. Writes to DynamoDB `courier_sta
 }
 ```
 
-**Response 200** — empty body.
+**Response 204** — no body.
 
 ---
 
 #### `GET /api/v1/deliveries/eta`
 
-Called by Order Service at checkout. Returns Waze-calculated restaurant→customer travel time so the customer sees an accurate ETA before paying.
+Called by Order Service at checkout. Returns Waze-calculated restaurant→customer travel time.
 
-**Request**
-```
-GET /api/v1/deliveries/eta?restaurantId=rest-456&deliveryLat=32.0742&deliveryLng=34.7922
-Authorization: Bearer <internal_service_jwt>
-```
+**Query params:** `restaurantId`, `deliveryLat`, `deliveryLng`
 
 **Response 200**
 ```json
 {
   "estimatedDeliveryMinutes": 22,
   "restaurantToCustomerKm": 3.1,
-  "calculatedAt": "2026-06-28T18:49:00.000Z"
+  "calculatedAt": "2026-06-28T18:49:00.000Z",
+  "source": "waze"
 }
 ```
 
-If Waze is unavailable, the service returns a distance-based estimate and sets `"source": "fallback_distance"`.
+If Waze is unavailable, `"source": "fallback_distance"` is returned with a distance-based estimate.
 
 ---
 
 #### `GET /api/v1/deliveries/available`
 
-Courier App polls every 30 seconds. Returns paid orders for which this courier is in `eligible_courier_ids`. The courier's ID is extracted from the JWT — no lat/lng parameter needed.
-
-**Request**
-```
-GET /api/v1/deliveries/available
-Authorization: Bearer <jwt_access_token>
-```
+Courier App polls every 30 seconds. Courier ID extracted from JWT.
 
 **Response 200**
 ```json
@@ -345,15 +231,9 @@ Authorization: Bearer <jwt_access_token>
 
 #### `POST /api/v1/deliveries/{orderId}/accept`
 
-Courier accepts an available order. First-writer wins via conditional DynamoDB write. Returns `409 Conflict` if another courier already accepted.
+First-writer wins via conditional DynamoDB write. Returns `409` if another courier already accepted.
 
-**Request**
-```json
-{
-  "courierId": "courier-001",
-  "acceptedAt": "2026-06-28T18:51:45.000Z"
-}
-```
+**Request body** — see [`events/accept-delivery.json`](events/accept-delivery.json)
 
 **Response 200**
 ```json
@@ -366,67 +246,46 @@ Courier accepts an available order. First-writer wins via conditional DynamoDB w
 
 **Response 409**
 ```json
-{
-  "error": "ALREADY_ASSIGNED",
-  "message": "Another courier accepted this order first"
-}
+{ "error": "CONFLICT", "message": "Another courier accepted this order first" }
 ```
 
 ---
 
 #### `POST /api/v1/deliveries/{orderId}/stage`
 
-Courier advances delivery stage. Triggers the Stage State Machine.
+Courier advances delivery stage.
 
-**Request**
-```json
-{
-  "courierId": "courier-001",
-  "newStage": "PICKED_UP",
-  "failureReason": null
-}
-```
+**Request body** — see [`events/update-delivery-stage.json`](events/update-delivery-stage.json)
 
 `newStage` enum: `PICKED_UP` · `DELIVERED` · `FAILED`  
-`failureReason` — required when `newStage = FAILED`. Enum: `CUSTOMER_UNREACHABLE` · `WRONG_ADDRESS` · `ACCESS_DENIED` · `CUSTOMER_REFUSED` · `OTHER`
+`failureReason` — required when `newStage = FAILED`: `CUSTOMER_UNREACHABLE` · `WRONG_ADDRESS` · `ACCESS_DENIED` · `CUSTOMER_REFUSED` · `OTHER`
 
 **Response 200**
 ```json
-{
-  "orderId": "order-xyz",
-  "stage": "PICKED_UP",
-  "updatedAt": "2026-06-28T19:07:00.000Z"
-}
+{ "orderId": "order-xyz", "stage": "PICKED_UP", "updatedAt": "2026-06-28T19:07:00.000Z" }
 ```
 
 ---
 
 #### `POST /api/v1/deliveries/{orderId}/confirm-delivery`
 
-Customer confirms delivery. Delivery transitions to `DELIVERED` once both courier (`newStage: DELIVERED`) and customer have confirmed — no photo required.
+Customer confirms delivery. Transitions to `DELIVERED` once both courier and customer confirm.
 
-**Request**
+**Request body**
 ```json
-{
-  "customerId": "user-123"
-}
+{ "customerId": "user-123" }
 ```
 
 **Response 200**
 ```json
-{
-  "orderId": "order-xyz",
-  "stage": "DELIVERED",
-  "updatedAt": "2026-06-28T19:28:00.000Z"
-}
+{ "orderId": "order-xyz", "stage": "DELIVERED", "updatedAt": "2026-06-28T19:28:00.000Z" }
 ```
 
 ---
 
 #### `GET /api/v1/deliveries/{orderId}`
 
-Returns current delivery state. Reads from DynamoDB `active_orders` (status) and `courier_states` (last GPS).  
-**Callers:** Customer App (polls every 5 s) · Ops Dashboard · Order Service.
+Returns current delivery state. Reads DynamoDB `active_orders` + `courier_states`.
 
 **Response 200**
 ```json
@@ -436,11 +295,7 @@ Returns current delivery state. Reads from DynamoDB `active_orders` (status) and
   "courierId": "courier-001",
   "courierName": "Avi Cohen",
   "courierPhone": "+972501234567",
-  "courierLastLocation": {
-    "lat": 32.0800,
-    "lng": 34.7850,
-    "updatedAt": "2026-06-28T19:15:00.000Z"
-  },
+  "courierLastLocation": { "lat": 32.0800, "lng": 34.7850, "updatedAt": "2026-06-28T19:15:00.000Z" },
   "estimatedDeliveryTime": "2026-06-28T19:30:00.000Z",
   "assignedAt": "2026-06-28T18:51:00.000Z",
   "pickedUpAt": "2026-06-28T19:07:00.000Z",
@@ -448,22 +303,16 @@ Returns current delivery state. Reads from DynamoDB `active_orders` (status) and
 }
 ```
 
-`status` enum: `ASSIGNED` · `PICKED_UP` · `DELIVERED` · `FAILED`  
-`courierLastLocation` reflects the last GPS push (up to 10 s stale).
-
 **Response 404**
 ```json
-{
-  "error": "DELIVERY_NOT_FOUND",
-  "message": "No delivery assignment found for order order-xyz"
-}
+{ "error": "NOT_FOUND", "message": "No delivery assignment found for order order-xyz" }
 ```
 
 ---
 
 #### `GET /health`
 
-Fargate / ALB health check. Returns `200` when all modules are ready; `503` when any critical module fails — ALB stops routing traffic to this task.
+Fargate / ALB health check.
 
 **Response 200**
 ```json
@@ -479,102 +328,52 @@ Fargate / ALB health check. Returns `200` when all modules are ready; `503` when
 }
 ```
 
-**Response 503**
-```json
-{
-  "status": "degraded",
-  "modules": {
-    "sqsConsumer": "error",
-    "assignmentEngine": "ready",
-    "gpsSyncScheduler": "ready",
-    "wazeClient": "ready"
-  },
-  "timestamp": "2026-06-28T19:00:00.000Z"
-}
-```
+---
+
+### SQS Inbound — `delivery-events`
+
+Messages consumed from the `delivery-events` SQS Standard queue (fan-out from SNS Standard topic `order-events`). The background SQS consumer polls every 5 seconds. DLQ triggers after 3 consecutive processing failures. Duplicates are handled by checking current order state before acting.
+
+See [`events/order-preparing.json`](events/order-preparing.json), [`events/order-cancelled.json`](events/order-cancelled.json), [`events/order-status-ready.json`](events/order-status-ready.json) for payload examples.
+
+Events can also be sent directly to `POST /internal/events` for local testing without SQS.
+
+---
+
+### SNS Outbound — `order-events`
+
+All events published to SNS Standard topic `order-events`.  
+Consumers: Notification Service · Monitoring Service · Order Service.
+
+| Event type | Trigger |
+|---|---|
+| `delivery.courier_assigned` | Assignment engine selects a courier |
+| `delivery.status.picked_up` | Courier taps Picked up (`ASSIGNED → PICKED_UP`) |
+| `delivery.status.delivered` | Both parties confirm (`PICKED_UP → DELIVERED`) |
+| `delivery.status.failed` | Courier reports failure (`PICKED_UP → FAILED`) |
+| `delivery.courier_reassigned` | Original courier cancelled mid-delivery |
+
+See [`src/modules/events/model/delivery_event.py`](src/modules/events/model/delivery_event.py) for full schemas.
 
 ---
 
 ### REST Outbound
 
-Calls made by the Delivery Service to other services and external APIs. Internal calls use a service JWT.
-
----
-
 #### `GET /api/v1/couriers/{courierId}/profile` → User Service
 
-Called by the Assignment Engine after filtering, to fetch name and phone for the selected courier before emitting `delivery.courier_assigned`.
-
-**Response 200**
-```json
-{
-  "courierId": "courier-001",
-  "name": "Avi Cohen",
-  "phone": "+972501234567",
-  "vehicleType": "bike"
-}
-```
-
----
+Called by the Assignment Engine to fetch name and phone before emitting `delivery.courier_assigned`.
 
 #### Waze API — ETA Calls
 
-Authentication via API key stored in AWS Secrets Manager. Called in two contexts:
-
-**Assignment (courier → restaurant):** up to 20 calls per `order.preparing` event, once per candidate courier. The Assignment Engine keeps couriers where `totalRouteTime / 60 ≤ X_MINUTES_THRESHOLD` (configurable, default 15 min).
-
-```
-GET https://waze.com/row-RoutingManager/routingRequest
-  ?from=ll.{courierLat}%2C{courierLng}
-  &to=ll.{restaurantLat}%2C{restaurantLng}
-  &at=0&returnJSON=true
-Authorization: <waze_api_key>
-```
-
-Response (used fields):
-```json
-{
-  "alternatives": [
-    { "response": { "totalRouteTime": 420 } }
-  ]
-}
-```
-
-**Pre-payment ETA (restaurant → customer):** same endpoint with `from` = restaurant coords, `to` = customer delivery address. Returns `estimatedDeliveryMinutes` for `GET /deliveries/eta`.
-
----
+Up to 20 parallel calls per `order.preparing` event (one per candidate courier). API key stored in AWS Secrets Manager. Falls back to PostGIS distance-only ranking if Waze is unavailable.
 
 #### `PATCH /api/v1/orders/{orderId}/status` → Order Service
 
-Called by the Stage State Machine on every delivery stage change. On terminal states (`DELIVERED` / `FAILED`), Order Service additionally archives the complete order record to Supabase and deletes the DynamoDB item.
-
-**Request**
-```json
-{
-  "status": "DELIVERED",
-  "actorId": "courier-001",
-  "timestamp": "2026-06-23T19:28:00.000Z"
-}
-```
-
-`status` enum: `PICKED_UP` · `DELIVERED` · `FAILED`
-
-**Response 200**
-```json
-{
-  "orderId": "order-xyz",
-  "status": "DELIVERED",
-  "updatedAt": "2026-06-23T19:28:00.000Z"
-}
-```
+Called by the Stage State Machine on every delivery stage change. On terminal states (`DELIVERED` / `FAILED`), Order Service archives the order record to Supabase and removes it from DynamoDB.
 
 ---
 
 ### DynamoDB Write Shapes
-
-Attribute type notation: `S` = String · `N` = Number · `M` = Map · `BOOL` = Boolean.
-
----
 
 #### Table: `courier_states`
 
@@ -582,97 +381,50 @@ PK: `courierId` (S). Single item per courier — upserted on GPS updates, availa
 
 ```json
 {
-  "courierId":      { "S": "courier-001" },
-  "status":         { "S": "busy" },
-  "currentOrderId": { "S": "order-xyz" },
-  "vehicleType":    { "S": "bike" },
-  "lastLocation": {
-    "M": {
-      "lat":       { "N": "32.08" },
-      "lng":       { "N": "34.785" },
-      "updatedAt": { "S": "2026-06-23T19:15:00.000Z" }
-    }
-  },
-  "updatedAt": { "S": "2026-06-23T19:15:00.000Z" }
+  "courierId": "courier-001",
+  "status": "busy",
+  "currentOrderId": "order-xyz",
+  "vehicleType": "bike",
+  "lastLocation": { "lat": 32.08, "lng": 34.785, "updatedAt": "2026-06-28T19:15:00.000Z" },
+  "updatedAt": "2026-06-28T19:15:00.000Z"
 }
 ```
 
-`status` enum: `offline` · `available` · `busy`  
-`currentOrderId` — present only when `status = "busy"`; cleared when the order completes.
-
-**Write triggers:**
-
-| Event | `status` | `currentOrderId` |
-|-------|----------|-----------------|
-| Courier goes available | `available` | — |
-| Courier goes offline | `offline` | cleared |
-| Courier assigned | `busy` | set to `orderId` |
-| GPS push every 10 s | unchanged | unchanged — only `lastLocation` updated |
-| Order `DELIVERED` / `FAILED` | `available` | cleared |
-
-**GSIs:**
-
-| GSI | Purpose |
-|-----|---------|
-| `GSI_couriers_by_status` (PK: `status`, SK: `updatedAt`) | Assignment Engine queries `status = "available"` |
-| `GSI_courier_by_current_order` (PK: `currentOrderId`) | Look up which courier is assigned to a given order |
-
----
+`status` enum: `offline` · `available` · `busy`
 
 #### Table: `order_events`
 
-PK: `order_id` (S) · SK: `event_time` (S). Immutable append-only audit log written on every delivery stage transition.
+PK: `order_id` (S) · SK: `event_time` (S). Immutable append-only audit log.
 
 ```json
 {
-  "order_id":       { "S": "order-xyz" },
-  "event_time":     { "S": "2026-06-28T19:28:00.000Z" },
-  "event_type":     { "S": "delivery.status.delivered" },
-  "stage":          { "S": "DELIVERED" },
-  "previous_stage": { "S": "PICKED_UP" },
-  "actor_id":       { "S": "courier-001" },
-  "actor_type":     { "S": "COURIER" },
-  "courier_id":     { "S": "courier-001" },
-  "metadata": {
-    "M": {
-      "courier_confirmed":  { "BOOL": true },
-      "customer_confirmed": { "BOOL": true },
-      "confirmed_by":       { "S": "COURIER" }
-    }
-  },
-  "event_id": { "S": "evt_01J0DS4444ABCD" }
+  "order_id": "order-xyz",
+  "event_time": "2026-06-28T19:28:00.000Z",
+  "event_type": "delivery.status.delivered",
+  "stage": "DELIVERED",
+  "previous_stage": "PICKED_UP",
+  "actor_id": "courier-001",
+  "actor_type": "COURIER",
+  "courier_id": "courier-001",
+  "metadata": { "courier_confirmed": true, "customer_confirmed": true, "confirmed_by": "COURIER" },
+  "event_id": "evt_01J0DS4444ABCD"
 }
 ```
-
-`actor_type` enum: `COURIER` · `CUSTOMER` · `SYSTEM`
 
 ---
 
 ### CloudWatch Custom Metrics
 
-Namespace: `FoodDelivery/DeliveryService`. All alarms fan out to the SNS ops alert topic.
+Namespace: `FoodDelivery/DeliveryService`.
 
-| Metric | Unit | Alarm Threshold |
+| Metric | Unit | Alert Threshold |
 |--------|------|-----------------|
 | `CourierAssignmentLagSeconds` | Seconds | > 120 s |
 | `UnacceptedOrdersCount` | Count | > 5 for > 5 min |
 | `StageMachineErrorCount` | Count | > 5 errors / 5 min |
 | `GpsSyncJobFailureCount` | Count | > 0 (any failure) |
 | `WazeApiErrorRate` | Percent | > 10% per 5 min |
-| `EligibleCouriersFound` | Count | < 1 for > 3 orders (no coverage alert) |
-
-Example `PutMetricData` shape:
-```json
-{
-  "MetricName": "CourierAssignmentLagSeconds",
-  "Namespace": "FoodDelivery/DeliveryService",
-  "Unit": "Seconds",
-  "Value": 8.4,
-  "Dimensions": [
-    { "Name": "Environment", "Value": "production" }
-  ]
-}
-```
+| `EligibleCouriersFound` | Count | < 1 for > 3 orders |
 
 ---
 
@@ -690,12 +442,34 @@ Example `PutMetricData` shape:
 
 ## Scaling & Resilience
 
-**Auto-scaling:** ECS service scales on CPU. 1 task handles steady load; scale-out triggers at 70% CPU for 2 consecutive minutes (up to 4 tasks for lunch-peak GPS volume).
+**Auto-scaling:** ECS service scales on CPU. 1 task handles steady load; scale-out at 70% CPU for 2 consecutive minutes (up to 4 tasks for lunch-peak GPS volume).
 
-**DLQ:** The `delivery-events` SQS queue has a Dead Letter Queue. Messages failing 3 times move to DLQ and trigger a CloudWatch alarm without blocking the queue.
+**DLQ:** `delivery-events` SQS queue has a Dead Letter Queue. Messages failing 3 times move to DLQ and trigger a CloudWatch alarm without blocking the queue.
 
 **Race condition (courier accept):** Uses DynamoDB `ConditionExpression: attribute_not_exists(assignedCourierId)`. Only the first writer succeeds; all others receive 409.
 
 **Waze API failure:** Falls back to distance-only eligibility (top-5 nearest from PostGIS) and logs `WazeApiErrorRate`. Ops alerted after > 10% error rate in 5 minutes.
 
-**Duplicate SQS messages:** The service checks current order state before acting on any inbound event, making all handlers idempotent.
+**Duplicate SQS messages:** All event handlers check current order state before acting, making them idempotent.
+
+---
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `AWS_REGION` | `us-east-1` | AWS region |
+| `DYNAMODB_TABLE_ACTIVE_ORDERS` | `active_orders` | DynamoDB table name |
+| `DYNAMODB_TABLE_COURIER_STATES` | `courier_states` | DynamoDB table name |
+| `DYNAMODB_TABLE_ORDER_EVENTS` | `order_events` | DynamoDB table name |
+| `SNS_TOPIC_ARN_ORDER_EVENTS` | — | SNS topic for outbound delivery events |
+| `SQS_QUEUE_URL_DELIVERY_EVENTS` | — | SQS queue URL for inbound order events |
+| `SUPABASE_URL` | — | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | — | Supabase service role key |
+| `ORDER_SERVICE_URL` | — | Base URL of the Order Service |
+| `WAZE_API_KEY` | — | Waze Routing API key (from Secrets Manager) |
+| `MAX_COURIER_DISTANCE_MINUTES` | `15` | Max Waze travel time for courier eligibility |
+| `GPS_SYNC_INTERVAL_SECONDS` | `600` | How often DynamoDB → Supabase GPS sync runs |
+| `SQS_POLL_INTERVAL_SECONDS` | `5` | How often SQS consumer polls for new messages |
+| `LOG_LEVEL` | `INFO` | Python logging level |
+| `ENVIRONMENT` | `dev` | `dev` / `staging` / `production` |

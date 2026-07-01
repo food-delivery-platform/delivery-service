@@ -1,0 +1,16 @@
+from enum import Enum
+
+
+class DeliveryStage(str, Enum):
+    ASSIGNED = "ASSIGNED"
+    PICKED_UP = "PICKED_UP"
+    DELIVERED = "DELIVERED"
+    FAILED = "FAILED"
+
+
+class FailureReason(str, Enum):
+    CUSTOMER_UNREACHABLE = "CUSTOMER_UNREACHABLE"
+    WRONG_ADDRESS = "WRONG_ADDRESS"
+    ACCESS_DENIED = "ACCESS_DENIED"
+    CUSTOMER_REFUSED = "CUSTOMER_REFUSED"
+    OTHER = "OTHER"

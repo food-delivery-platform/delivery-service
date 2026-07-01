@@ -1,14 +1,4 @@
 {
-  "httpMethod": "POST",
-  "pathParameters": {
-    "orderId": "order-xyz"
-  },
-  "requestContext": {
-    "authorizer": {
-      "claims": {
-        "sub": "courier-001"
-      }
-    }
-  },
-  "body": "{\"courierId\":\"courier-001\",\"acceptedAt\":\"2026-06-28T18:51:45.000Z\"}"
+  "courierId": "courier-001",
+  "acceptedAt": "2026-06-28T18:51:45.000Z"
 }
