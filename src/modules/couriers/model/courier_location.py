@@ -1,10 +1,9 @@
-from dataclasses import dataclass
 from datetime import datetime
 
+from pydantic import BaseModel
 
-@dataclass
-class CourierLocation:
-    courier_id: str
+
+class CourierLocation(BaseModel):
     lat: float
     lng: float
     updated_at: datetime

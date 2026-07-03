@@ -1,13 +1,9 @@
-from dataclasses import dataclass
-from typing import Optional
+from pydantic import BaseModel
 
 
-@dataclass
-class DeliveryAddress:
-    street: str
-    city: str
-    country: str
+class DeliveryAddress(BaseModel):
     lat: float
     lng: float
-    apartment: Optional[str] = None
-    notes: Optional[str] = None
+    street: str | None = None
+    city: str | None = None
+    address_id: str | None = None

@@ -1,86 +1,106 @@
-from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Optional
+from typing import Any
 
-from src.modules.deliveries.model.delivery_stage import DeliveryStage
+from pydantic import BaseModel, ConfigDict
+from pydantic.alias_generators import to_camel
+
+from src.modules.deliveries.model.delivery_stage import DeliveryStage, FailureReason
 
 
-@dataclass
-class DeliveryAddressDTO:
-    street: str
-    city: str
-    country: str
+class _Schema(BaseModel):
+    """Base for all API DTOs — serialises to camelCase JSON."""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+# ── ETA ──────────────────────────────────────────────────────────────────────
+
+
+class EtaResponse(_Schema):
+    estimated_delivery_minutes: int
+    restaurant_to_customer_km: float
+    calculated_at: datetime
+    source: str = "waze"
+
+
+# ── Available deliveries ─────────────────────────────────────────────────────
+
+
+class AvailableOrderItem(_Schema):
+    name: str
+    quantity: int
+
+
+class AvailableOrder(_Schema):
+    order_id: str
+    restaurant_id: str
+    restaurant_name: str | None = None
+    restaurant_address: dict[str, Any]
+    customer_address: dict[str, Any]
+    estimated_pickup_minutes: int | None = None
+    estimated_delivery_minutes: int | None = None
+    estimated_earnings: float | None = None
+    currency: str
+    items: list[AvailableOrderItem]
+
+
+class AvailableDeliveriesResponse(_Schema):
+    available_orders: list[AvailableOrder]
+
+
+# ── Accept delivery ───────────────────────────────────────────────────────────
+
+
+class AcceptDeliveryRequest(_Schema):
+    courier_id: str
+    accepted_at: datetime
+
+
+class AcceptDeliveryResponse(_Schema):
+    order_id: str
+    status: str
+    restaurant_address: dict[str, Any] | None = None
+
+
+# ── Delivery stage update ────────────────────────────────────────────────────
+
+
+class UpdateDeliveryStageRequest(_Schema):
+    courier_id: str
+    new_stage: DeliveryStage
+    failure_reason: FailureReason | None = None
+
+
+class UpdateDeliveryStageResponse(_Schema):
+    order_id: str
+    stage: DeliveryStage
+    updated_at: datetime
+
+
+# ── Confirm delivery (customer) ───────────────────────────────────────────────
+
+
+class ConfirmDeliveryRequest(_Schema):
+    customer_id: str
+
+
+# ── Delivery state ────────────────────────────────────────────────────────────
+
+
+class CourierLastLocation(_Schema):
     lat: float
     lng: float
-    apartment: Optional[str] = None
-    notes: Optional[str] = None
-
-
-@dataclass
-class DeliveryDTO:
-    delivery_id: str
-    order_id: str
-    customer_id: str
-    restaurant_id: str
-    delivery_address: DeliveryAddressDTO
-    stage: DeliveryStage
-    created_at: datetime
-    updated_at: datetime
-    courier_id: Optional[str] = None
-    estimated_delivery_minutes: Optional[int] = None
-    picked_up_at: Optional[datetime] = None
-    delivered_at: Optional[datetime] = None
-
-
-@dataclass
-class AvailableDeliveryDTO:
-    order_id: str
-    restaurant_id: str
-    delivery_address: DeliveryAddressDTO
-    estimated_delivery_minutes: Optional[int]
-
-
-@dataclass
-class GetAvailableDeliveriesResponseDTO:
-    deliveries: List[AvailableDeliveryDTO]
-
-
-@dataclass
-class AcceptDeliveryResponseDTO:
-    delivery_id: str
-    order_id: str
-    courier_id: str
-    stage: DeliveryStage
-
-
-@dataclass
-class UpdateDeliveryStageRequestDTO:
-    stage: DeliveryStage
-
-
-@dataclass
-class UpdateDeliveryStageResponseDTO:
-    delivery_id: str
-    order_id: str
-    stage: DeliveryStage
     updated_at: datetime
 
 
-@dataclass
-class ConfirmDeliveryResponseDTO:
-    delivery_id: str
+class DeliveryStateResponse(_Schema):
     order_id: str
-    stage: DeliveryStage
-    delivered_at: datetime
-
-
-@dataclass
-class GetEtaRequestDTO:
-    restaurant_id: str
-    delivery_lat: float
-    delivery_lng: float
-
-
-@dataclass
-class GetEtaResponseDTO:
-    estimated_delivery_minutes: int
+    status: str
+    courier_id: str | None = None
+    courier_name: str | None = None
+    courier_phone: str | None = None
+    courier_last_location: CourierLastLocation | None = None
+    estimated_delivery_time: datetime | None = None
+    assigned_at: datetime | None = None
+    picked_up_at: datetime | None = None
+    delivered_at: datetime | None = None

@@ -1,22 +1,21 @@
-from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
 
-from .delivery_address import DeliveryAddress
-from .delivery_stage import DeliveryStage
+from pydantic import BaseModel
+
+from src.modules.deliveries.model.delivery_address import DeliveryAddress
+from src.modules.deliveries.model.delivery_stage import DeliveryStage
 
 
-@dataclass
-class Delivery:
-    delivery_id: str
+class Delivery(BaseModel):
     order_id: str
-    customer_id: str
-    restaurant_id: str
-    delivery_address: DeliveryAddress
     stage: DeliveryStage
-    created_at: datetime
-    updated_at: datetime
-    courier_id: Optional[str] = None
-    estimated_delivery_minutes: Optional[int] = None
-    picked_up_at: Optional[datetime] = None
-    delivered_at: Optional[datetime] = None
+    courier_id: str | None = None
+    courier_name: str | None = None
+    courier_phone: str | None = None
+    restaurant_address: DeliveryAddress | None = None
+    delivery_address: DeliveryAddress | None = None
+    estimated_pickup_time: datetime | None = None
+    estimated_delivery_time: datetime | None = None
+    assigned_at: datetime | None = None
+    picked_up_at: datetime | None = None
+    delivered_at: datetime | None = None

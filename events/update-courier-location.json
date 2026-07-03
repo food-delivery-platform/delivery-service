@@ -1,14 +1,5 @@
 {
-  "httpMethod": "PATCH",
-  "pathParameters": {
-    "courierId": "courier-001"
-  },
-  "requestContext": {
-    "authorizer": {
-      "claims": {
-        "sub": "courier-001"
-      }
-    }
-  },
-  "body": "{\"lat\":32.08,\"lng\":34.785,\"timestamp\":\"2026-06-28T19:15:00.000Z\"}"
+  "lat": 32.08,
+  "lng": 34.785,
+  "timestamp": "2026-06-28T19:15:00.000Z"
 }

@@ -1,22 +1,64 @@
-from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
-from typing import Optional
+from typing import Literal
+
+from pydantic import BaseModel
+
+from src.modules.couriers.model.vehicle_type import VehicleType
 
 
-class DeliveryEventType(str, Enum):
-    COURIER_ASSIGNED = "delivery.courier_assigned"
-    STATUS_PICKED_UP = "delivery.status.picked_up"
-    STATUS_DELIVERED = "delivery.status.delivered"
-    STATUS_FAILED = "delivery.status.failed"
-    COURIER_REASSIGNED = "delivery.courier_reassigned"
-
-
-@dataclass
-class DeliveryEvent:
-    event_type: DeliveryEventType
-    delivery_id: str
-    order_id: str
+class DeliveryCourierAssignedEvent(BaseModel):
+    event_type: Literal["delivery.courier_assigned"] = "delivery.courier_assigned"
+    event_id: str
     timestamp: datetime
-    courier_id: Optional[str] = None
-    actor_id: Optional[str] = None
+    order_id: str
+    courier_id: str
+    courier_name: str
+    courier_phone: str
+    vehicle_type: VehicleType
+    estimated_pickup_time: datetime
+    estimated_delivery_time: datetime
+    actor_id: str = "SYSTEM"
+
+
+class DeliveryPickedUpEvent(BaseModel):
+    event_type: Literal["delivery.status.picked_up"] = "delivery.status.picked_up"
+    event_id: str
+    timestamp: datetime
+    order_id: str
+    courier_id: str
+    actor_id: str
+
+
+class DeliveryDeliveredEvent(BaseModel):
+    event_type: Literal["delivery.status.delivered"] = "delivery.status.delivered"
+    event_id: str
+    timestamp: datetime
+    order_id: str
+    courier_id: str
+    courier_confirmed: bool
+    customer_confirmed: bool
+    confirmed_by: Literal["COURIER", "CUSTOMER"]
+    actual_delivery_time: datetime
+    actor_id: str
+
+
+class DeliveryFailedEvent(BaseModel):
+    event_type: Literal["delivery.status.failed"] = "delivery.status.failed"
+    event_id: str
+    timestamp: datetime
+    order_id: str
+    courier_id: str
+    failure_reason: str
+    failure_note: str | None = None
+    actor_id: str
+
+
+class DeliveryCourierReassignedEvent(BaseModel):
+    event_type: Literal["delivery.courier_reassigned"] = "delivery.courier_reassigned"
+    event_id: str
+    timestamp: datetime
+    order_id: str
+    previous_courier_id: str
+    new_courier_id: str
+    reason: str
+    actor_id: str = "SYSTEM"

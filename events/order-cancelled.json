@@ -1,9 +1,8 @@
 {
-  "Records": [
-    {
-      "body": "{\"eventType\":\"order.cancelled\",\"eventId\":\"evt_01J0XYZ9999ABCD\",\"timestamp\":\"2026-06-28T18:55:00.000Z\",\"orderId\":\"order-xyz\",\"reason\":\"PAYMENT_FAILED\",\"actorId\":\"SYSTEM\"}",
-      "receiptHandle": "receipt-handle-002",
-      "messageId": "msg-002"
-    }
-  ]
+  "eventType": "order.cancelled",
+  "eventId": "evt_01J0XYZ9999ABCD",
+  "timestamp": "2026-06-28T18:55:00.000Z",
+  "orderId": "order-xyz",
+  "reason": "PAYMENT_FAILED",
+  "actorId": "SYSTEM"
 }

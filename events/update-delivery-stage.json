@@ -1,14 +1,5 @@
 {
-  "httpMethod": "POST",
-  "pathParameters": {
-    "orderId": "order-xyz"
-  },
-  "requestContext": {
-    "authorizer": {
-      "claims": {
-        "sub": "courier-001"
-      }
-    }
-  },
-  "body": "{\"courierId\":\"courier-001\",\"newStage\":\"PICKED_UP\",\"failureReason\":null}"
+  "courierId": "courier-001",
+  "newStage": "PICKED_UP",
+  "failureReason": null
 }

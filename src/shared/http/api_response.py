@@ -1,46 +1,45 @@
-import json
 from typing import Any
 
-
-def ok(body: Any) -> dict:
-    return {
-        "statusCode": 200,
-        "headers": {"Content-Type": "application/json"},
-        "body": json.dumps(body),
-    }
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 
-def created(body: Any) -> dict:
-    return {
-        "statusCode": 201,
-        "headers": {"Content-Type": "application/json"},
-        "body": json.dumps(body),
-    }
+def _serialize(data: Any) -> Any:
+    if isinstance(data, BaseModel):
+        return data.model_dump(by_alias=True, mode="json")
+    return data
 
 
-def no_content() -> dict:
-    return {"statusCode": 204, "headers": {}, "body": ""}
+def ok(data: Any) -> JSONResponse:
+    return JSONResponse(status_code=200, content=_serialize(data))
 
 
-def bad_request(code: str, message: str) -> dict:
+def created(data: Any) -> JSONResponse:
+    return JSONResponse(status_code=201, content=_serialize(data))
+
+
+def no_content() -> JSONResponse:
+    return JSONResponse(status_code=204, content=None)
+
+
+def bad_request(code: str, message: str) -> JSONResponse:
     return _error(400, code, message)
 
 
-def not_found(code: str, message: str) -> dict:
+def not_found(code: str, message: str) -> JSONResponse:
     return _error(404, code, message)
 
 
-def conflict(code: str, message: str) -> dict:
+def conflict(code: str, message: str) -> JSONResponse:
     return _error(409, code, message)
 
 
-def internal_error(message: str = "Internal server error") -> dict:
+def internal_error(message: str = "Internal server error") -> JSONResponse:
     return _error(500, "INTERNAL_ERROR", message)
 
 
-def _error(status_code: int, code: str, message: str) -> dict:
-    return {
-        "statusCode": status_code,
-        "headers": {"Content-Type": "application/json"},
-        "body": json.dumps({"error": code, "message": message}),
-    }
+def _error(status_code: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": code, "message": message},
+    )
