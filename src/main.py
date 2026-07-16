@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from src.api.routes import couriers, deliveries, events, health
 from src.shared.config.env import (
@@ -8,6 +9,7 @@ from src.shared.config.env import (
     SQS_POLL_INTERVAL_SECONDS,
     SQS_QUEUE_URL_DELIVERY_EVENTS,
 )
+from src.shared.errors.app_error import AppError
 from src.shared.logger import logger
 
 
@@ -45,3 +47,9 @@ app.include_router(health.router)
 app.include_router(deliveries.router, prefix="/api/v1")
 app.include_router(couriers.router, prefix="/api/v1")
 app.include_router(events.router, prefix="/internal")
+
+
+@app.exception_handler(AppError)
+async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
+    logger.warning("AppError | code={} status={} message={}", exc.code, exc.status_code, exc.message)
+    return JSONResponse(status_code=exc.status_code, content={"error": exc.code, "message": exc.message})

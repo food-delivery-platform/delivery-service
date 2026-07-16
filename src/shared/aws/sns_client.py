@@ -2,7 +2,7 @@ import json
 
 import boto3
 
-from src.shared.config.env import AWS_REGION, SNS_TOPIC_ARN_ORDER_EVENTS
+from src.shared.config.env import AWS_REGION
 from src.shared.logger import logger
 
 _client = None
@@ -16,23 +16,25 @@ def get_client():
     return _client
 
 
-def publish_order_event(event_type: str, payload: dict) -> str:
-    message = json.dumps({**payload, "eventType": event_type})
-    logger.info("Publishing SNS event | type={} topic={}", event_type, SNS_TOPIC_ARN_ORDER_EVENTS)
+def publish(topic_arn: str, subject: str, message: dict, **kwargs) -> str:
+    payload = json.dumps(message)
+    logger.info("Publishing SNS event | subject={} topic={}", subject, topic_arn)
     try:
         response = get_client().publish(
-            TopicArn=SNS_TOPIC_ARN_ORDER_EVENTS,
-            Message=message,
+            TopicArn=topic_arn,
+            Subject=subject,
+            Message=payload,
             MessageAttributes={
                 "eventType": {
                     "DataType": "String",
-                    "StringValue": event_type,
+                    "StringValue": subject,
                 }
             },
+            **kwargs,
         )
         message_id = response["MessageId"]
-        logger.success("SNS event published | type={} message_id={}", event_type, message_id)
+        logger.success("SNS event published | subject={} message_id={}", subject, message_id)
         return message_id
     except Exception:
-        logger.exception("Failed to publish SNS event | type={} topic={}", event_type, SNS_TOPIC_ARN_ORDER_EVENTS)
+        logger.exception("Failed to publish SNS event | subject={} topic={}", subject, topic_arn)
         raise

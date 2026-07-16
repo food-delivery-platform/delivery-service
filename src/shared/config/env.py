@@ -2,7 +2,7 @@ import os
 
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
-DYNAMODB_TABLE_ACTIVE_ORDERS = os.environ.get("DYNAMODB_TABLE_ACTIVE_ORDERS", "active_orders")
+DYNAMODB_TABLE_DELIVERY_ASSIGNMENTS = os.environ.get("DYNAMODB_TABLE_DELIVERY_ASSIGNMENTS", "delivery_assignments")
 DYNAMODB_TABLE_COURIER_STATES = os.environ.get("DYNAMODB_TABLE_COURIER_STATES", "courier_states")
 DYNAMODB_TABLE_ORDER_EVENTS = os.environ.get("DYNAMODB_TABLE_ORDER_EVENTS", "order_events")
 

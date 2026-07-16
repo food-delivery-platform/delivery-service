@@ -2,7 +2,7 @@ import json
 
 import boto3
 
-from src.shared.config.env import AWS_REGION, SQS_QUEUE_URL_DELIVERY_EVENTS
+from src.shared.config.env import AWS_REGION
 from src.shared.logger import logger
 
 _client = None
@@ -16,18 +16,26 @@ def get_client():
     return _client
 
 
-def delete_message(receipt_handle: str, queue_url: str = SQS_QUEUE_URL_DELIVERY_EVENTS) -> None:
+def receive_messages(queue_url: str, max_messages: int = 10, wait_seconds: int = 5) -> list[dict]:
+    logger.debug("Polling SQS | queue={} max_messages={} wait_seconds={}", queue_url, max_messages, wait_seconds)
+    response = get_client().receive_message(
+        QueueUrl=queue_url,
+        MaxNumberOfMessages=max_messages,
+        WaitTimeSeconds=wait_seconds,
+    )
+    messages = response.get("Messages", [])
+    logger.debug("SQS poll returned | queue={} count={}", queue_url, len(messages))
+    return messages
+
+
+def delete_message(queue_url: str, receipt_handle: str) -> None:
     logger.debug("Deleting SQS message | queue={}", queue_url)
     get_client().delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
 
 
-def parse_sqs_records(event: dict) -> list[dict]:
-    records = event.get("Records", [])
-    logger.debug("Parsing SQS batch | count={}", len(records))
-    parsed = []
-    for record in records:
-        try:
-            parsed.append(json.loads(record["body"]))
-        except (json.JSONDecodeError, KeyError):
-            logger.warning("Failed to parse SQS record | message_id={}", record.get("messageId", "unknown"))
-    return parsed
+def parse_message_body(message: dict) -> dict | None:
+    try:
+        return json.loads(message["Body"])
+    except (json.JSONDecodeError, KeyError):
+        logger.warning("Failed to parse SQS message body | message_id={}", message.get("MessageId", "unknown"))
+        return None
