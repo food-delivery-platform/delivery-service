@@ -10,6 +10,7 @@ from src.modules.events.model.order_event import OrderCancelledEvent, OrderPrepa
 from src.shared.config.env import MAX_COURIER_DISTANCE_MINUTES
 from src.shared.logger import logger
 from src.shared.utils.geo import estimate_minutes_from_distance_km, haversine_distance_km
+from src.shared.waze.client import get_travel_time_minutes
 
 
 def handle_order_preparing(event: OrderPreparingEvent) -> None:
@@ -40,13 +41,15 @@ def handle_order_preparing(event: OrderPreparingEvent) -> None:
 
 
 def _find_eligible_couriers(restaurant_lat: float, restaurant_lng: float) -> list[str]:
-    """PostGIS nearest-20, then distance-only filtering — the Waze-based version (Phase 5)
-    calls Waze per candidate instead of this haversine estimate, falling back to it on failure."""
+    """PostGIS nearest-20, then Waze travel time per candidate (courier -> restaurant), falling
+    back to a haversine-distance estimate if Waze is unavailable — see docs/ARCHITECTURE.md §15.6."""
     candidates = get_nearest_couriers(restaurant_lat, restaurant_lng, limit=20)
     eligible_ids = []
     for candidate in candidates:
-        distance_km = haversine_distance_km(restaurant_lat, restaurant_lng, candidate["lat"], candidate["lng"])
-        minutes = estimate_minutes_from_distance_km(distance_km)
+        minutes = get_travel_time_minutes(candidate["lat"], candidate["lng"], restaurant_lat, restaurant_lng)
+        if minutes is None:
+            distance_km = haversine_distance_km(restaurant_lat, restaurant_lng, candidate["lat"], candidate["lng"])
+            minutes = estimate_minutes_from_distance_km(distance_km)
         if minutes <= MAX_COURIER_DISTANCE_MINUTES:
             eligible_ids.append(candidate["courier_id"])
     return eligible_ids

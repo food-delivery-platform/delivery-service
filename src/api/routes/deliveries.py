@@ -1,7 +1,9 @@
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Path, Query
 
+from src.modules.couriers.model.courier_state import CourierStatus
 from src.modules.couriers.service import courier_service
 from src.modules.deliveries.api.dtos import (
     AcceptDeliveryRequest,
@@ -18,11 +20,20 @@ from src.modules.deliveries.api.dtos import (
 )
 from src.modules.deliveries.model.delivery_assignment import DeliveryAssignment
 from src.modules.deliveries.model.delivery_stage import DeliveryStage
-from src.modules.deliveries.repository import delivery_assignment_repository, restaurant_lookup
+from src.modules.deliveries.repository import delivery_assignment_repository, restaurant_lookup, stage_audit_repository
+from src.modules.events.model.delivery_event import (
+    DeliveryCourierAssignedEvent,
+    DeliveryDeliveredEvent,
+    DeliveryFailedEvent,
+    DeliveryPickedUpEvent,
+)
+from src.modules.events.publisher.delivery_event_publisher import publish_delivery_event
 from src.shared.auth.current_courier import get_current_courier_id
 from src.shared.errors.app_error import NotFoundError
 from src.shared.http.api_response import ok
 from src.shared.logger import logger
+from src.shared.utils.geo import estimate_minutes_from_distance_km, haversine_distance_km
+from src.shared.waze.client import get_travel_time_minutes
 
 router = APIRouter(tags=["deliveries"])
 
@@ -39,8 +50,8 @@ def _to_available_order(assignment: DeliveryAssignment) -> AvailableOrder:
         order_id=assignment.order_id,
         restaurant_id=assignment.restaurant_id,
         restaurant_name=restaurant_lookup.get_restaurant_name(assignment.restaurant_id),
-        restaurant_address=assignment.restaurant_address.model_dump(),
-        customer_address=assignment.delivery_address.model_dump(),
+        restaurant_address=assignment.restaurant_address.model_dump(by_alias=True),
+        customer_address=assignment.delivery_address.model_dump(by_alias=True),
         estimated_pickup_minutes=_minutes_from_now(assignment.estimated_pickup_time),
         estimated_delivery_minutes=_minutes_from_now(assignment.estimated_delivery_time),
         estimated_earnings=None,  # no earnings formula defined anywhere yet — see docs/PLAN.md Phase 3
@@ -73,8 +84,8 @@ def _to_delivery_state_response(assignment: DeliveryAssignment) -> DeliveryState
         courier_phone=courier_phone,
         courier_last_location=courier_last_location,
         restaurant_name=restaurant_lookup.get_restaurant_name(assignment.restaurant_id),
-        restaurant_address=assignment.restaurant_address.model_dump(),
-        customer_address=assignment.delivery_address.model_dump(),
+        restaurant_address=assignment.restaurant_address.model_dump(by_alias=True),
+        customer_address=assignment.delivery_address.model_dump(by_alias=True),
         estimated_delivery_time=assignment.estimated_delivery_time,
         assigned_at=assignment.assigned_at,
         picked_up_at=assignment.picked_up_at,
@@ -94,15 +105,29 @@ async def get_delivery_eta(
         delivery_lat,
         delivery_lng,
     )
-    # TODO: call Waze API for restaurant → customer travel time
-    # TODO: remove fallback_distance source once Waze is wired up
-    logger.warning("Waze client not implemented — returning distance-based ETA fallback")
-    result = EtaResponse(
-        estimated_delivery_minutes=25,
-        restaurant_to_customer_km=3.5,
-        calculated_at=datetime.now(UTC),
-        source="fallback_distance",
-    )
+    location = restaurant_lookup.get_restaurant_location(restaurant_id)
+    if location is None:
+        logger.warning("Restaurant location unavailable — returning fallback ETA | restaurant={}", restaurant_id)
+        result = EtaResponse(
+            estimated_delivery_minutes=25,
+            restaurant_to_customer_km=3.5,
+            calculated_at=datetime.now(UTC),
+            source="fallback_distance",
+        )
+    else:
+        restaurant_lat, restaurant_lng = location
+        distance_km = haversine_distance_km(restaurant_lat, restaurant_lng, delivery_lat, delivery_lng)
+        minutes = get_travel_time_minutes(restaurant_lat, restaurant_lng, delivery_lat, delivery_lng)
+        source = "waze"
+        if minutes is None:
+            minutes = estimate_minutes_from_distance_km(distance_km)
+            source = "fallback_distance"
+        result = EtaResponse(
+            estimated_delivery_minutes=round(minutes),
+            restaurant_to_customer_km=round(distance_km, 2),
+            calculated_at=datetime.now(UTC),
+            source=source,
+        )
     logger.debug(
         "ETA result | restaurant={} estimated_minutes={} source={}",
         restaurant_id,
@@ -138,11 +163,41 @@ async def accept_delivery(
     body: AcceptDeliveryRequest = ...,
 ):
     logger.info("Courier accept attempt | order={} courier={}", order_id, body.courier_id)
-    # TODO: conditional DynamoDB write — attribute_not_exists(assignedCourierId)
-    # TODO: on ConflictError → logger.warning("Accept rejected — order already assigned | "
-    #     "order={} courier={}", order_id, body.courier_id)
-    # TODO: on success  → logger.success("Courier assigned | order={} courier={}", order_id, body.courier_id)
-    return ok(AcceptDeliveryResponse(order_id=order_id, status="ASSIGNED"))
+    if delivery_assignment_repository.get(order_id) is None:
+        raise NotFoundError(f"No delivery assignment found for order {order_id}")
+
+    # Raises ConflictError (409) on a lost first-writer-wins race — handled by main.py's
+    # AppError exception handler.
+    assignment = delivery_assignment_repository.accept(order_id, body.courier_id, body.accepted_at)
+
+    courier_service.set_status(body.courier_id, CourierStatus.BUSY, current_order_id=order_id)
+
+    profile = courier_service.get_profile(body.courier_id)
+    state = courier_service.get_state(body.courier_id)
+    vehicle_type = state.vehicle_type if state else None
+
+    publish_delivery_event(
+        DeliveryCourierAssignedEvent(
+            event_id=f"evt_{uuid4().hex}",
+            timestamp=datetime.now(UTC),
+            order_id=order_id,
+            courier_id=body.courier_id,
+            courier_name=profile.get("name"),
+            courier_phone=profile.get("phone"),
+            vehicle_type=vehicle_type,
+            estimated_pickup_time=assignment.estimated_pickup_time,
+            estimated_delivery_time=assignment.estimated_delivery_time,
+        )
+    )
+    logger.success("Courier assigned | order={} courier={}", order_id, body.courier_id)
+
+    return ok(
+        AcceptDeliveryResponse(
+            order_id=order_id,
+            status="ASSIGNED",
+            restaurant_address=assignment.restaurant_address.model_dump(by_alias=True),
+        )
+    )
 
 
 @router.post("/deliveries/{order_id}/stage", response_model=UpdateDeliveryStageResponse)
@@ -151,24 +206,85 @@ async def update_delivery_stage(
     body: UpdateDeliveryStageRequest = ...,
 ):
     logger.info("Stage transition requested | order={} new_stage={}", order_id, body.new_stage)
-    # TODO: write transition to DynamoDB order_events + active_orders
-    # TODO: publish delivery event to SNS order-events topic
-    # TODO: PATCH /orders/{orderId}/status on Order Service
+    existing = delivery_assignment_repository.get(order_id)
+    if existing is None:
+        raise NotFoundError(f"No delivery assignment found for order {order_id}")
 
-    updated_at = datetime.now(UTC)
+    now = datetime.now(UTC)
 
     if body.new_stage == DeliveryStage.DELIVERED:
-        logger.success("Delivery completed | order={}", order_id)
-    elif body.new_stage == DeliveryStage.FAILED:
-        logger.warning(
-            "Delivery failed | order={} reason={}",
-            order_id,
-            body.failure_reason,
-        )
-    else:
-        logger.info("Stage updated | order={} stage={}", order_id, body.new_stage)
+        # Terminal DELIVERED only fires once BOTH courier (here) and customer
+        # (POST /confirm-delivery) have confirmed — see delivery-service-message-contracts.md §2.
+        updated = delivery_assignment_repository.set_courier_confirmed(order_id)
+        if updated.customer_confirmed:
+            final = delivery_assignment_repository.update_stage(order_id, DeliveryStage.DELIVERED, now)
+            stage_audit_repository.record(
+                order_id,
+                event_type="delivery.status.delivered",
+                stage=DeliveryStage.DELIVERED.value,
+                previous_stage=existing.stage.value if existing.stage else None,
+                actor_id=body.courier_id,
+                actor_type="COURIER",
+                courier_id=body.courier_id,
+                metadata={"courierConfirmed": True, "customerConfirmed": True, "confirmedBy": "COURIER"},
+            )
+            publish_delivery_event(
+                DeliveryDeliveredEvent(
+                    event_id=f"evt_{uuid4().hex}",
+                    timestamp=now,
+                    order_id=order_id,
+                    courier_id=body.courier_id,
+                    courier_confirmed=True,
+                    customer_confirmed=True,
+                    confirmed_by="COURIER",
+                    actual_delivery_time=now,
+                    actor_id=body.courier_id,
+                )
+            )
+            courier_service.set_status(body.courier_id, CourierStatus.AVAILABLE, current_order_id=None)
+            logger.success("Delivery completed | order={}", order_id)
+            return ok(UpdateDeliveryStageResponse(order_id=order_id, stage=final.stage, updated_at=now))
 
-    return ok(UpdateDeliveryStageResponse(order_id=order_id, stage=body.new_stage, updated_at=updated_at))
+        logger.info("Courier confirmed delivery — awaiting customer confirmation | order={}", order_id)
+        return ok(UpdateDeliveryStageResponse(order_id=order_id, stage=updated.stage, updated_at=now))
+
+    updated = delivery_assignment_repository.update_stage(order_id, body.new_stage, now)
+    stage_audit_repository.record(
+        order_id,
+        event_type=f"delivery.status.{body.new_stage.value.lower()}",
+        stage=body.new_stage.value,
+        previous_stage=existing.stage.value if existing.stage else None,
+        actor_id=body.courier_id,
+        actor_type="COURIER",
+        courier_id=body.courier_id,
+    )
+
+    if body.new_stage == DeliveryStage.PICKED_UP:
+        publish_delivery_event(
+            DeliveryPickedUpEvent(
+                event_id=f"evt_{uuid4().hex}",
+                timestamp=now,
+                order_id=order_id,
+                courier_id=body.courier_id,
+                actor_id=body.courier_id,
+            )
+        )
+        logger.info("Stage updated | order={} stage={}", order_id, body.new_stage)
+    elif body.new_stage == DeliveryStage.FAILED:
+        publish_delivery_event(
+            DeliveryFailedEvent(
+                event_id=f"evt_{uuid4().hex}",
+                timestamp=now,
+                order_id=order_id,
+                courier_id=body.courier_id,
+                failure_reason=body.failure_reason.value if body.failure_reason else "OTHER",
+                actor_id=body.courier_id,
+            )
+        )
+        courier_service.set_status(body.courier_id, CourierStatus.AVAILABLE, current_order_id=None)
+        logger.warning("Delivery failed | order={} reason={}", order_id, body.failure_reason)
+
+    return ok(UpdateDeliveryStageResponse(order_id=order_id, stage=updated.stage, updated_at=now))
 
 
 @router.post("/deliveries/{order_id}/confirm-delivery", response_model=UpdateDeliveryStageResponse)
@@ -177,13 +293,42 @@ async def confirm_delivery(
     body: ConfirmDeliveryRequest = ...,
 ):
     logger.info("Customer delivery confirmation | order={} customer={}", order_id, body.customer_id)
-    # TODO: mark customer confirmation on DynamoDB active_orders
-    # TODO: if courier also confirmed → transition to DELIVERED, publish SNS event
-    # TODO: on both confirmed → logger.success("Delivery confirmed by both parties | order={}", order_id)
-    return ok(
-        UpdateDeliveryStageResponse(
+    existing = delivery_assignment_repository.get(order_id)
+    if existing is None:
+        raise NotFoundError(f"No delivery assignment found for order {order_id}")
+
+    now = datetime.now(UTC)
+    updated = delivery_assignment_repository.set_customer_confirmed(order_id)
+
+    if not updated.courier_confirmed:
+        logger.info("Customer confirmed delivery — awaiting courier confirmation | order={}", order_id)
+        return ok(UpdateDeliveryStageResponse(order_id=order_id, stage=updated.stage, updated_at=now))
+
+    final = delivery_assignment_repository.update_stage(order_id, DeliveryStage.DELIVERED, now)
+    stage_audit_repository.record(
+        order_id,
+        event_type="delivery.status.delivered",
+        stage=DeliveryStage.DELIVERED.value,
+        previous_stage=existing.stage.value if existing.stage else None,
+        actor_id=body.customer_id,
+        actor_type="CUSTOMER",
+        courier_id=updated.assigned_courier_id,
+        metadata={"courierConfirmed": True, "customerConfirmed": True, "confirmedBy": "CUSTOMER"},
+    )
+    publish_delivery_event(
+        DeliveryDeliveredEvent(
+            event_id=f"evt_{uuid4().hex}",
+            timestamp=now,
             order_id=order_id,
-            stage=DeliveryStage.DELIVERED,
-            updated_at=datetime.now(UTC),
+            courier_id=updated.assigned_courier_id or "",
+            courier_confirmed=True,
+            customer_confirmed=True,
+            confirmed_by="CUSTOMER",
+            actual_delivery_time=now,
+            actor_id=body.customer_id,
         )
     )
+    if updated.assigned_courier_id:
+        courier_service.set_status(updated.assigned_courier_id, CourierStatus.AVAILABLE, current_order_id=None)
+    logger.success("Delivery confirmed by both parties | order={}", order_id)
+    return ok(UpdateDeliveryStageResponse(order_id=order_id, stage=final.stage, updated_at=now))
