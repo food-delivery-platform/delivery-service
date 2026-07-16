@@ -3,7 +3,7 @@
 Handles the full delivery lifecycle for the Food Delivery Platform: GPS collection, courier proximity assignment, delivery stage transitions, and ETA calculations.
 
 **Runtime:** Python + FastAPI · AWS Fargate (1–4 tasks, auto-scales at 70% CPU)  
-**Owned data:** DynamoDB `courier_states`, `active_orders`, `order_events` · Supabase `courier_locations`, `assignments`
+**Owned data:** DynamoDB `courier_states`, `delivery_assignments`, `order_events` · Supabase `courier_locations`
 
 ---
 
@@ -153,7 +153,7 @@ Interactive API docs available at `http://localhost:8000/docs`.
 | **Assignment engine** | `order.preparing` event | (1) PostGIS: 20 nearest couriers to restaurant, (2) Waze per courier for arrival time, (3) keep those ≤ threshold, (4) write `eligible_courier_ids` to DynamoDB |
 | **Poll handler** | `GET /api/v1/deliveries/available` every 30 s | Returns paid orders for which this courier appears in `eligible_courier_ids` |
 | **Accept handler** | `POST /api/v1/deliveries/{id}/accept` | Conditional DynamoDB write (`attribute_not_exists(assignedCourierId)`); 409 if another courier already accepted |
-| **Stage state machine** | Courier `POST /stage`; Customer `POST /confirm-delivery` | `ASSIGNED → PICKED_UP → DELIVERED / FAILED`; writes `order_events` audit log; publishes to SNS; calls Order Service status patch |
+| **Stage state machine** | Courier `POST /stage`; Customer `POST /confirm-delivery` | `ASSIGNED → PICKED_UP → DELIVERED / FAILED`; writes `order_events` audit log; publishes to SNS only — never a REST callback to Order Service |
 | **Health check** | `GET /health` | ALB target group readiness probe |
 
 ---
@@ -180,6 +180,20 @@ Courier App sends GPS position every 10 seconds. Writes to DynamoDB `courier_sta
 ```
 
 **Response 204** — no body.
+
+---
+
+#### `GET /api/v1/couriers/{courierId}/profile`
+
+Internal — called by the accept handler (`POST /deliveries/{orderId}/accept`) to populate
+`delivery.courier_assigned` with a name/phone/vehicleType. Backed by a direct, best-effort Supabase query
+(`couriers` joined to `users`); fields are `null` rather than fabricated if Supabase isn't configured or the
+courier isn't found.
+
+**Response 200**
+```json
+{ "courierId": "courier-001", "name": "Avi Cohen", "phone": "+972501234567", "vehicleType": "bike" }
+```
 
 ---
 
@@ -285,7 +299,8 @@ Customer confirms delivery. Transitions to `DELIVERED` once both courier and cus
 
 #### `GET /api/v1/deliveries/{orderId}`
 
-Returns current delivery state. Reads DynamoDB `active_orders` + `courier_states`.
+Returns current delivery state. Reads DynamoDB `delivery_assignments` (this service's own table — not Order
+Service's `active_orders`) + `courier_states`.
 
 **Response 200**
 ```json
@@ -296,6 +311,9 @@ Returns current delivery state. Reads DynamoDB `active_orders` + `courier_states
   "courierName": "Avi Cohen",
   "courierPhone": "+972501234567",
   "courierLastLocation": { "lat": 32.0800, "lng": 34.7850, "updatedAt": "2026-06-28T19:15:00.000Z" },
+  "restaurantName": "HaBurger",
+  "restaurantAddress": { "lat": 32.0853, "lng": 34.7818, "street": "Rothschild Blvd 1" },
+  "customerAddress": { "lat": 32.0742, "lng": 34.7922 },
   "estimatedDeliveryTime": "2026-06-28T19:30:00.000Z",
   "assignedAt": "2026-06-28T18:51:00.000Z",
   "pickedUpAt": "2026-06-28T19:07:00.000Z",
@@ -359,17 +377,15 @@ See [`src/modules/events/model/delivery_event.py`](src/modules/events/model/deli
 
 ### REST Outbound
 
-#### `GET /api/v1/couriers/{courierId}/profile` → User Service
-
-Called by the Assignment Engine to fetch name and phone before emitting `delivery.courier_assigned`.
+The only real outbound call this service makes is to Waze — see below. `GET /couriers/{courierId}/profile`
+is not an outbound call: it's an endpoint this service exposes itself (see REST Inbound), backed by a
+direct best-effort Supabase query, called from the accept handler before publishing
+`delivery.courier_assigned`. `PATCH /orders/{orderId}/status` was never implemented — this service notifies
+Order Service only via the SNS events above, never a REST callback (see `docs/ARCHITECTURE.md` §0.6).
 
 #### Waze API — ETA Calls
 
 Up to 20 parallel calls per `order.preparing` event (one per candidate courier). API key stored in AWS Secrets Manager. Falls back to PostGIS distance-only ranking if Waze is unavailable.
-
-#### `PATCH /api/v1/orders/{orderId}/status` → Order Service
-
-Called by the Stage State Machine on every delivery stage change. On terminal states (`DELIVERED` / `FAILED`), Order Service archives the order record to Supabase and removes it from DynamoDB.
 
 ---
 
@@ -433,10 +449,9 @@ Namespace: `FoodDelivery/DeliveryService`.
 | Store | Table | Purpose |
 |-------|-------|---------|
 | DynamoDB | `courier_states` | Live GPS (every 10 s); courier status (available / busy / offline) |
-| DynamoDB | `active_orders` | Order state + `eligible_courier_ids` written by Assignment Engine |
+| DynamoDB | `delivery_assignments` | This service's own assignment/eligibility state (`eligible_courier_ids`, `assigned_courier_id`, stage) — not Order Service's `active_orders` |
 | DynamoDB | `order_events` | Immutable stage-transition audit log |
 | Supabase PostgreSQL | `courier_locations` | PostGIS geometry; batch-updated from DynamoDB every 10 min |
-| Supabase PostgreSQL | `assignments` | Permanent courier-to-order assignment records |
 
 ---
 
@@ -459,7 +474,7 @@ Namespace: `FoodDelivery/DeliveryService`.
 | Variable | Default | Description |
 |---|---|---|
 | `AWS_REGION` | `us-east-1` | AWS region |
-| `DYNAMODB_TABLE_ACTIVE_ORDERS` | `active_orders` | DynamoDB table name |
+| `DYNAMODB_TABLE_DELIVERY_ASSIGNMENTS` | `delivery_assignments` | DynamoDB table name |
 | `DYNAMODB_TABLE_COURIER_STATES` | `courier_states` | DynamoDB table name |
 | `DYNAMODB_TABLE_ORDER_EVENTS` | `order_events` | DynamoDB table name |
 | `SNS_TOPIC_ARN_ORDER_EVENTS` | — | SNS topic for outbound delivery events |
