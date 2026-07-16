@@ -1,9 +1,12 @@
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from src.api.routes import couriers, deliveries, events, health
+from src.modules.events.consumer import sqs_consumer
 from src.shared.config.env import (
     GPS_SYNC_INTERVAL_SECONDS,
     SQS_POLL_INTERVAL_SECONDS,
@@ -26,13 +29,16 @@ async def lifespan(app: FastAPI):
         SQS_POLL_INTERVAL_SECONDS,
     )
     # TODO: start APScheduler GPS sync job (DynamoDB → Supabase every 10 min)
-    # TODO: start SQS polling background task for delivery-events queue
+    sqs_task = await sqs_consumer.start()
     logger.success("Delivery Service ready to accept requests")
 
     yield
 
     logger.info("Delivery Service shutting down")
-    # TODO: graceful shutdown — stop scheduler and SQS consumer
+    sqs_consumer.stop()
+    sqs_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await sqs_task
     logger.info("Delivery Service stopped")
 
 

@@ -1,5 +1,3 @@
-import json
-
 import boto3
 
 from src.shared.config.env import AWS_REGION
@@ -31,11 +29,3 @@ def receive_messages(queue_url: str, max_messages: int = 10, wait_seconds: int =
 def delete_message(queue_url: str, receipt_handle: str) -> None:
     logger.debug("Deleting SQS message | queue={}", queue_url)
     get_client().delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-
-
-def parse_message_body(message: dict) -> dict | None:
-    try:
-        return json.loads(message["Body"])
-    except (json.JSONDecodeError, KeyError):
-        logger.warning("Failed to parse SQS message body | message_id={}", message.get("MessageId", "unknown"))
-        return None
