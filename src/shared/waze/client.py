@@ -2,9 +2,14 @@ import requests
 
 from src.shared.config.env import WAZE_API_KEY
 from src.shared.logger import logger
+from src.shared.metrics import cloudwatch
 
 _ROUTING_URL = "https://waze.com/row-RoutingManager/routingRequest"
 _TIMEOUT_SECONDS = 5
+
+
+def is_configured() -> bool:
+    return bool(WAZE_API_KEY)
 
 
 def get_travel_time_minutes(from_lat: float, from_lng: float, to_lat: float, to_lng: float) -> float | None:
@@ -27,7 +32,9 @@ def get_travel_time_minutes(from_lat: float, from_lng: float, to_lat: float, to_
         )
         response.raise_for_status()
         total_route_time_seconds = response.json()["alternatives"][0]["response"]["totalRouteTime"]
+        cloudwatch.waze_api_error_rate(0)
         return total_route_time_seconds / 60
     except Exception:
         logger.warning("Waze API call failed — falling back to distance-only estimate")
+        cloudwatch.waze_api_error_rate(100)
         return None

@@ -9,6 +9,7 @@ from src.modules.deliveries.repository import delivery_assignment_repository as 
 from src.modules.events.model.order_event import OrderCancelledEvent, OrderPreparingEvent, OrderStatusReadyEvent
 from src.shared.config.env import MAX_COURIER_DISTANCE_MINUTES
 from src.shared.logger import logger
+from src.shared.metrics import cloudwatch
 from src.shared.utils.geo import estimate_minutes_from_distance_km, haversine_distance_km
 from src.shared.waze.client import get_travel_time_minutes
 
@@ -38,6 +39,10 @@ def handle_order_preparing(event: OrderPreparingEvent) -> None:
     eligible_ids = _find_eligible_couriers(event.restaurant_address.lat, event.restaurant_address.lng)
     repo.set_eligible_couriers(event.order_id, eligible_ids)
     logger.info("Assignment engine complete | order={} eligible_count={}", event.order_id, len(eligible_ids))
+
+    cloudwatch.eligible_couriers_found(len(eligible_ids))
+    lag_seconds = (datetime.now(UTC) - event.timestamp).total_seconds()
+    cloudwatch.courier_assignment_lag_seconds(lag_seconds)
 
 
 def _find_eligible_couriers(restaurant_lat: float, restaurant_lng: float) -> list[str]:

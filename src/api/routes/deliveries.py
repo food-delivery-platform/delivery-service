@@ -32,6 +32,7 @@ from src.shared.auth.current_courier import get_current_courier_id
 from src.shared.errors.app_error import NotFoundError
 from src.shared.http.api_response import ok
 from src.shared.logger import logger
+from src.shared.metrics import cloudwatch
 from src.shared.utils.geo import estimate_minutes_from_distance_km, haversine_distance_km
 from src.shared.waze.client import get_travel_time_minutes
 
@@ -210,6 +211,14 @@ async def update_delivery_stage(
     if existing is None:
         raise NotFoundError(f"No delivery assignment found for order {order_id}")
 
+    try:
+        return await _do_update_delivery_stage(order_id, body, existing)
+    except Exception:
+        cloudwatch.stage_machine_error_count()
+        raise
+
+
+async def _do_update_delivery_stage(order_id: str, body: UpdateDeliveryStageRequest, existing: DeliveryAssignment):
     now = datetime.now(UTC)
 
     if body.new_stage == DeliveryStage.DELIVERED:

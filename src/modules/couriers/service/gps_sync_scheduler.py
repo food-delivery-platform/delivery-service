@@ -4,6 +4,7 @@ from src.shared.aws.dynamodb_client import get_table
 from src.shared.config.env import DYNAMODB_TABLE_COURIER_STATES, GPS_SYNC_INTERVAL_SECONDS
 from src.shared.db.supabase_client import get_client
 from src.shared.logger import logger
+from src.shared.metrics import cloudwatch
 
 _scheduler: AsyncIOScheduler | None = None
 
@@ -48,9 +49,13 @@ def _run_sync_job() -> None:
     try:
         sync_once()
     except Exception:
-        # Caught here (not left to crash the scheduler thread) — Phase 7 wires
-        # GpsSyncJobFailureCount at this call site.
+        # Caught here so a failure never crashes the scheduler thread.
         logger.exception("GPS sync job failed — will retry on next interval")
+        cloudwatch.gps_sync_job_failure_count()
+
+
+def is_ready() -> bool:
+    return _scheduler is not None and _scheduler.running
 
 
 def start() -> AsyncIOScheduler:

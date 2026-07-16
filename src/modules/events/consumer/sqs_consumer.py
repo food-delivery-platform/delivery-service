@@ -14,6 +14,7 @@ _EVENT_MODELS = {
 }
 
 _running = False
+_completed_first_poll = False
 
 
 async def start() -> asyncio.Task:
@@ -29,10 +30,20 @@ def stop() -> None:
     _running = False
 
 
+def is_ready() -> bool:
+    """Ready once the consumer has completed its first successful poll — or immediately if no
+    queue is configured, since that's an intentionally-supported local-dev state (Phase 1)."""
+    if not _running:
+        return False
+    return _completed_first_poll or not SQS_QUEUE_URL_DELIVERY_EVENTS
+
+
 async def _poll_loop() -> None:
+    global _completed_first_poll
     while _running:
         if SQS_QUEUE_URL_DELIVERY_EVENTS:
             await _poll_once()
+            _completed_first_poll = True
         await asyncio.sleep(SQS_POLL_INTERVAL_SECONDS)
 
 
