@@ -100,6 +100,9 @@ class DeliveryStateResponse(_Schema):
     courier_name: str | None = None
     courier_phone: str | None = None
     courier_last_location: CourierLastLocation | None = None
+    restaurant_name: str | None = None
+    restaurant_address: dict[str, Any] | None = None
+    customer_address: dict[str, Any] | None = None
     estimated_delivery_time: datetime | None = None
     assigned_at: datetime | None = None
     picked_up_at: datetime | None = None

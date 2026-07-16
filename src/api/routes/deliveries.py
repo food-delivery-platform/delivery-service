@@ -1,22 +1,85 @@
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Path, Query
+from fastapi import APIRouter, Depends, Path, Query
 
+from src.modules.couriers.service import courier_service
 from src.modules.deliveries.api.dtos import (
     AcceptDeliveryRequest,
     AcceptDeliveryResponse,
     AvailableDeliveriesResponse,
+    AvailableOrder,
+    AvailableOrderItem,
     ConfirmDeliveryRequest,
+    CourierLastLocation,
     DeliveryStateResponse,
     EtaResponse,
     UpdateDeliveryStageRequest,
     UpdateDeliveryStageResponse,
 )
+from src.modules.deliveries.model.delivery_assignment import DeliveryAssignment
 from src.modules.deliveries.model.delivery_stage import DeliveryStage
+from src.modules.deliveries.repository import delivery_assignment_repository, restaurant_lookup
+from src.shared.auth.current_courier import get_current_courier_id
+from src.shared.errors.app_error import NotFoundError
 from src.shared.http.api_response import ok
 from src.shared.logger import logger
 
 router = APIRouter(tags=["deliveries"])
+
+
+def _minutes_from_now(at: datetime | None) -> int | None:
+    if at is None:
+        return None
+    target = at if at.tzinfo else at.replace(tzinfo=UTC)
+    return max(0, round((target - datetime.now(UTC)).total_seconds() / 60))
+
+
+def _to_available_order(assignment: DeliveryAssignment) -> AvailableOrder:
+    return AvailableOrder(
+        order_id=assignment.order_id,
+        restaurant_id=assignment.restaurant_id,
+        restaurant_name=restaurant_lookup.get_restaurant_name(assignment.restaurant_id),
+        restaurant_address=assignment.restaurant_address.model_dump(),
+        customer_address=assignment.delivery_address.model_dump(),
+        estimated_pickup_minutes=_minutes_from_now(assignment.estimated_pickup_time),
+        estimated_delivery_minutes=_minutes_from_now(assignment.estimated_delivery_time),
+        estimated_earnings=None,  # no earnings formula defined anywhere yet — see docs/PLAN.md Phase 3
+        currency=assignment.currency,
+        items=[
+            AvailableOrderItem(name=item.get("name", ""), quantity=item.get("quantity", 1)) for item in assignment.items
+        ],
+    )
+
+
+def _to_delivery_state_response(assignment: DeliveryAssignment) -> DeliveryStateResponse:
+    courier_name = courier_phone = None
+    courier_last_location = None
+    if assignment.assigned_courier_id:
+        profile = courier_service.get_profile(assignment.assigned_courier_id)
+        courier_name = profile.get("name")
+        courier_phone = profile.get("phone")
+        state = courier_service.get_state(assignment.assigned_courier_id)
+        if state and state.last_location:
+            courier_last_location = CourierLastLocation(
+                lat=state.last_location.lat,
+                lng=state.last_location.lng,
+                updated_at=state.last_location.updated_at,
+            )
+    return DeliveryStateResponse(
+        order_id=assignment.order_id,
+        status=assignment.stage.value if assignment.stage else "PENDING_ASSIGNMENT",
+        courier_id=assignment.assigned_courier_id,
+        courier_name=courier_name,
+        courier_phone=courier_phone,
+        courier_last_location=courier_last_location,
+        restaurant_name=restaurant_lookup.get_restaurant_name(assignment.restaurant_id),
+        restaurant_address=assignment.restaurant_address.model_dump(),
+        customer_address=assignment.delivery_address.model_dump(),
+        estimated_delivery_time=assignment.estimated_delivery_time,
+        assigned_at=assignment.assigned_at,
+        picked_up_at=assignment.picked_up_at,
+        delivered_at=assignment.delivered_at,
+    )
 
 
 @router.get("/deliveries/eta", response_model=EtaResponse)
@@ -50,19 +113,23 @@ async def get_delivery_eta(
 
 
 @router.get("/deliveries/available", response_model=AvailableDeliveriesResponse)
-async def get_available_deliveries():
+async def get_available_deliveries(courier_id: str | None = Depends(get_current_courier_id)):
     # DEBUG — polled every 30 s by every courier; INFO would be extremely noisy
-    logger.debug("Available deliveries polled")
-    # TODO: extract courierId from JWT; query DynamoDB active_orders where eligible_courier_ids contains courierId
-    return ok(AvailableDeliveriesResponse(available_orders=[]))
+    logger.debug("Available deliveries polled | courier={}", courier_id)
+    if courier_id is None:
+        return ok(AvailableDeliveriesResponse(available_orders=[]))
+    assignments = delivery_assignment_repository.list_eligible_for_courier(courier_id)
+    return ok(AvailableDeliveriesResponse(available_orders=[_to_available_order(a) for a in assignments]))
 
 
 @router.get("/deliveries/{order_id}", response_model=DeliveryStateResponse)
 async def get_delivery(order_id: str = Path(...)):
     # DEBUG — polled every 5 s by the Customer App during active delivery
     logger.debug("Delivery state requested | order={}", order_id)
-    # TODO: read active_orders and courier_states from DynamoDB; raise 404 if not found
-    return ok(DeliveryStateResponse(order_id=order_id, status="ASSIGNED"))
+    assignment = delivery_assignment_repository.get(order_id)
+    if assignment is None:
+        raise NotFoundError(f"No delivery assignment found for order {order_id}")
+    return ok(_to_delivery_state_response(assignment))
 
 
 @router.post("/deliveries/{order_id}/accept", response_model=AcceptDeliveryResponse)
