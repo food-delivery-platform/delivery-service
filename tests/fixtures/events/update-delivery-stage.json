@@ -1,0 +1,5 @@
+{
+  "courierId": "courier-001",
+  "newStage": "PICKED_UP",
+  "failureReason": null
+}
