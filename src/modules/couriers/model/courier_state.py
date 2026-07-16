@@ -16,7 +16,7 @@ class CourierStatus(str, Enum):
 class CourierState(BaseModel):
     courier_id: str
     status: CourierStatus
-    vehicle_type: VehicleType
+    vehicle_type: VehicleType | None = None
     last_location: CourierLocation | None = None
     current_order_id: str | None = None
     updated_at: datetime
