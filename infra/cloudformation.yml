@@ -1,0 +1,319 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Temporary delivery-service ECS Fargate task definition and service.
+  Attaches to the existing food-delivery-preview-platform cluster, target
+  group, and security group instead of creating its own. Stack name must be
+  delivery-service-runtime so the shared cleanup automation can delete it.
+
+Parameters:
+  ClusterName:
+    Type: String
+    Description: ClusterName output from the food-delivery-preview-platform stack.
+
+  TargetGroupArn:
+    Type: String
+    Description: DeliveryTargetGroupArn output from food-delivery-preview-platform.
+
+  TaskSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: DeliveryTaskSecurityGroupId output from food-delivery-preview-platform.
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: SubnetIds output from food-delivery-preview-platform.
+
+  ImageUri:
+    Type: String
+    Default: public.ecr.aws/docker/library/busybox:1.36.1
+    Description: Container image to run. GitHub Actions updates this on every push while the preview platform is running.
+
+  ContainerPort:
+    Type: Number
+    Default: 8000
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+    Description: Number of ECS tasks to run once a real image has been deployed.
+
+  TaskCpu:
+    Type: String
+    Default: "256"
+    AllowedValues:
+      - "256"
+      - "512"
+      - "1024"
+      - "2048"
+      - "4096"
+
+  TaskMemory:
+    Type: String
+    Default: "512"
+    AllowedValues:
+      - "512"
+      - "1024"
+      - "2048"
+      - "3072"
+      - "4096"
+      - "5120"
+      - "6144"
+      - "7168"
+      - "8192"
+
+  DynamoDbTableDeliveryAssignments:
+    Type: String
+    Default: delivery_assignments
+
+  DynamoDbTableCourierStates:
+    Type: String
+    Default: courier_states
+
+  DynamoDbTableOrderEvents:
+    Type: String
+    Default: order_events
+
+  SnsTopicArnOrderEvents:
+    Type: String
+    Default: ""
+    Description: >-
+      ARN of the order-events SNS topic. Empty until food-delivery-infrastructure
+      provisions it; the ECS task will run with SNS publish disabled until then.
+
+  SqsQueueUrlDeliveryEvents:
+    Type: String
+    Default: ""
+    Description: Queue URL passed to the app for boto3 receive/delete calls.
+
+  SqsQueueArnDeliveryEvents:
+    Type: String
+    Default: ""
+    Description: >-
+      Queue ARN (distinct from the URL above) used only to scope the task
+      role's SQS IAM policy. Empty until the queue exists.
+
+  SupabaseUrl:
+    Type: String
+    NoEcho: true
+    Default: ""
+
+  SupabaseServiceRoleKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: >-
+      OPEN GAP (see docs/PHASE-9-PLAN.md): not yet stored in this repo's GitHub
+      Actions Secrets or AWS Secrets Manager. Deploys will run with this empty
+      until it is provisioned.
+
+  OrderServiceUrl:
+    Type: String
+    Default: ""
+
+  WazeApiKey:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: >-
+      OPEN GAP (see docs/PHASE-9-PLAN.md): not yet stored in this repo's GitHub
+      Actions Secrets or AWS Secrets Manager. Service falls back to
+      distance-only ETA/eligibility while this is empty.
+
+  MaxCourierDistanceMinutes:
+    Type: String
+    Default: "15"
+
+  GpsSyncIntervalSeconds:
+    Type: String
+    Default: "600"
+
+  SqsPollIntervalSeconds:
+    Type: String
+    Default: "5"
+
+  LogLevel:
+    Type: String
+    Default: INFO
+
+  Environment:
+    Type: String
+    Default: dev
+
+Conditions:
+  HasApplicationImage: !Not
+    - !Equals
+      - !Ref ImageUri
+      - public.ecr.aws/docker/library/busybox:1.36.1
+
+  HasSnsTopic: !Not
+    - !Equals
+      - !Ref SnsTopicArnOrderEvents
+      - ""
+
+  HasSqsQueue: !Not
+    - !Equals
+      - !Ref SqsQueueArnDeliveryEvents
+      - ""
+
+Resources:
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/delivery-service
+      RetentionInDays: 30
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: delivery-service-runtime-execution
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: delivery-service-runtime-task
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: dynamodb-owned-tables
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDbTableDeliveryAssignments}"
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDbTableCourierStates}"
+                  - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDbTableOrderEvents}"
+        - !If
+          - HasSnsTopic
+          - PolicyName: sns-publish-order-events
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - sns:Publish
+                  Resource: !Ref SnsTopicArnOrderEvents
+          - !Ref AWS::NoValue
+        - !If
+          - HasSqsQueue
+          - PolicyName: sqs-consume-delivery-events
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - sqs:ReceiveMessage
+                    - sqs:DeleteMessage
+                    - sqs:GetQueueAttributes
+                  Resource: !Ref SqsQueueArnDeliveryEvents
+          - !Ref AWS::NoValue
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: delivery-service
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: delivery-service
+          Image: !Ref ImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          Environment:
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: DYNAMODB_TABLE_DELIVERY_ASSIGNMENTS
+              Value: !Ref DynamoDbTableDeliveryAssignments
+            - Name: DYNAMODB_TABLE_COURIER_STATES
+              Value: !Ref DynamoDbTableCourierStates
+            - Name: DYNAMODB_TABLE_ORDER_EVENTS
+              Value: !Ref DynamoDbTableOrderEvents
+            - Name: SNS_TOPIC_ARN_ORDER_EVENTS
+              Value: !Ref SnsTopicArnOrderEvents
+            - Name: SQS_QUEUE_URL_DELIVERY_EVENTS
+              Value: !Ref SqsQueueUrlDeliveryEvents
+            - Name: SUPABASE_URL
+              Value: !Ref SupabaseUrl
+            - Name: SUPABASE_SERVICE_ROLE_KEY
+              Value: !Ref SupabaseServiceRoleKey
+            - Name: ORDER_SERVICE_URL
+              Value: !Ref OrderServiceUrl
+            - Name: WAZE_API_KEY
+              Value: !Ref WazeApiKey
+            - Name: MAX_COURIER_DISTANCE_MINUTES
+              Value: !Ref MaxCourierDistanceMinutes
+            - Name: GPS_SYNC_INTERVAL_SECONDS
+              Value: !Ref GpsSyncIntervalSeconds
+            - Name: SQS_POLL_INTERVAL_SECONDS
+              Value: !Ref SqsPollIntervalSeconds
+            - Name: LOG_LEVEL
+              Value: !Ref LogLevel
+            - Name: ENVIRONMENT
+              Value: !Ref Environment
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: delivery-service
+      Cluster: !Ref ClusterName
+      DesiredCount: !If
+        - HasApplicationImage
+        - !Ref DesiredCount
+        - 0
+      LaunchType: FARGATE
+      TaskDefinition: !Ref TaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          # The shared network stack has only public subnets and no NAT
+          # gateway, so tasks need a public IP to reach ECR, DynamoDB, SNS,
+          # SQS, and Supabase.
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref TaskSecurityGroupId
+          Subnets: !Ref SubnetIds
+      LoadBalancers:
+        - ContainerName: delivery-service
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroupArn
+
+Outputs:
+  EcsClusterName:
+    Value: !Ref ClusterName
+
+  EcsServiceName:
+    Value: !GetAtt Service.Name
+
+  EcsTaskDefinitionFamily:
+    Value: delivery-service
