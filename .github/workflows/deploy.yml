@@ -110,10 +110,8 @@ jobs:
           echo "security-group=$(get DeliveryTaskSecurityGroupId)" >> "$GITHUB_OUTPUT"
           echo "subnets=$(get SubnetIds)" >> "$GITHUB_OUTPUT"
 
-      # SUPABASE_SERVICE_ROLE_KEY and WAZE_API_KEY are an open gap (see
-      # docs/PHASE-9-PLAN.md): if these secrets don't exist yet in this repo,
-      # GitHub Actions resolves them to an empty string rather than failing,
-      # so this step stays runnable while the service degrades gracefully.
+      # DB credentials are injected by ECS directly from AWS Secrets Manager at
+      # task launch — only the ARN is passed here, not any plaintext value.
       - name: Deploy delivery-service-runtime stack
         if: steps.platform.outputs.running == 'true'
         run: |
@@ -133,7 +131,6 @@ jobs:
               SnsTopicArnOrderEvents="${{ secrets.SNS_TOPIC_ARN_ORDER_EVENTS }}" \
               SqsQueueUrlDeliveryEvents="${{ secrets.SQS_QUEUE_URL_DELIVERY_EVENTS }}" \
               SqsQueueArnDeliveryEvents="${{ secrets.SQS_QUEUE_ARN_DELIVERY_EVENTS }}" \
-              SupabaseUrl="${{ secrets.SUPABASE_URL }}" \
-              SupabaseServiceRoleKey="${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" \
+              DatabaseSecretArn="${{ secrets.DATABASE_SECRET_ARN }}" \
               OrderServiceUrl="${{ vars.ORDER_SERVICE_URL }}" \
               WazeApiKey="${{ secrets.WAZE_API_KEY }}"

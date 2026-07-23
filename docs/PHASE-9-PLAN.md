@@ -6,6 +6,11 @@ Goal: wire all environment variables safely across local dev, CI, and deployment
 
 This plan starts after AWS_ROLE_ARN is already added to GitHub Secrets.
 
+> **Open migration:** `docs/TASK.md` tracks replacing the `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`
+> vars below with `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASS` (sourced from
+> `DATABASE_SECRET_ARN`). Steps 3/4's variable list here still reflect the pre-migration state until
+> that task's Phase 3 lands.
+
 ## Status (2026-07-21)
 
 Everything doable without a real AWS deployment or without repo-admin access to GitHub Secrets is done:
@@ -29,8 +34,7 @@ Check lint and tests run with mocks only. No real AWS, Supabase, or Waze credent
 3. Build single source variable list from env config.
 Confirm all app variables are documented and mapped:
 - AWS_REGION
-- SUPABASE_URL
-- SUPABASE_SERVICE_ROLE_KEY
+- DATABASE_SECRET_ARN (deploy-time only — ARN passed to CloudFormation; ECS injects DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASS at task launch)
 - SNS_TOPIC_ARN_ORDER_EVENTS
 - SQS_QUEUE_URL_DELIVERY_EVENTS
 - ORDER_SERVICE_URL
@@ -41,14 +45,14 @@ Confirm all app variables are documented and mapped:
 
 4. Split values into GitHub Secrets vs GitHub Variables.
 Recommended:
-- Secrets: AWS_ROLE_ARN, AWS_REGION, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, WAZE_API_KEY
+- Secrets: AWS_ROLE_ARN, AWS_REGION, DATABASE_SECRET_ARN, WAZE_API_KEY
 - Secret or Variable: SNS_TOPIC_ARN_ORDER_EVENTS, SQS_QUEUE_URL_DELIVERY_EVENTS
 - Variable: ORDER_SERVICE_URL
-**Status: workflow wired, values not yet set.** `deploy.yml` reads `SUPABASE_URL`,
-`SUPABASE_SERVICE_ROLE_KEY`, `WAZE_API_KEY`, `SNS_TOPIC_ARN_ORDER_EVENTS`, `SQS_QUEUE_URL_DELIVERY_EVENTS`,
+- DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASS — never in GitHub; injected by ECS from `DATABASE_SECRET_ARN`.
+**Status: workflow wired, values not yet set.** `deploy.yml` reads `DATABASE_SECRET_ARN`,
+`WAZE_API_KEY`, `SNS_TOPIC_ARN_ORDER_EVENTS`, `SQS_QUEUE_URL_DELIVERY_EVENTS`,
 `SQS_QUEUE_ARN_DELIVERY_EVENTS` from `secrets.*` and `ORDER_SERVICE_URL` from `vars.*`. None of these have
-real values in this repo yet (see OPEN GAP note below) — GitHub resolves unset secrets/vars to an empty
-string rather than failing, so the workflow stays valid meanwhile.
+real values in this repo yet — GitHub resolves unset secrets/vars to an empty string rather than failing.
 
 5. Create Dockerfile and validate local container run.
 Do this before deploy workflow work.
@@ -91,15 +95,15 @@ it.
 
 11. Wire runtime app secrets from AWS Secrets Manager into ECS task definition.
 Required runtime secret sources:
-- SUPABASE_SERVICE_ROLE_KEY
+- DATABASE_SECRET_ARN — JSON secret with keys host/port/dbname/username/password;
+  ECS injects them as DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASS at task launch.
 - WAZE_API_KEY
-- SUPABASE_URL
 If missing in infrastructure, open explicit infra task and track as blocking gap.
-**Status: interim wiring done, Secrets Manager wiring still open.** `infra/cloudformation.yml` accepts
-`SupabaseUrl`/`SupabaseServiceRoleKey`/`WazeApiKey` as `NoEcho` parameters and passes them straight through
-to the ECS task's `Environment` block (matching how `SNS_TOPIC_ARN_ORDER_EVENTS` etc. are wired) — this is
-a temporary path, not a real Secrets Manager `secrets` block, since `food-delivery-infrastructure` doesn't
-define those secrets yet (same gap already recorded here and in `docs/PLAN.md`'s Phase 9 section).
+**Status: done for DB (Option A).** `infra/cloudformation.yml` accepts `DatabaseSecretArn` as a
+non-sensitive parameter, grants `secretsmanager:GetSecretValue` on that ARN to the task execution
+role, and uses an ECS `Secrets` block to inject the five DB env vars directly at task launch — no
+plaintext values pass through CloudFormation parameters or GitHub Actions. `WazeApiKey` is still
+passed as a plain CloudFormation parameter (same open gap as before; no Secrets Manager entry yet).
 
 12. Enforce secret-safe logging.
 Never print raw values for names ending with:
@@ -126,8 +130,8 @@ this repo's code changes can resolve alone.
 
 - Internal endpoint for event seeding is not exposed through public API path. For deployed preview tests, use internal access path (for example ECS exec) instead of public curl flow.
 - Keep AWS Secrets Manager as source of truth for app-level secrets.
-- OPEN GAP: `WAZE_API_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_URL` are not yet stored in this
-  repository's GitHub Actions Secrets (nor in AWS Secrets Manager) — they will be added later. Until then,
-  `deploy.yml` passes empty strings for all three, and the service must run in a documented degraded mode
-  (Supabase-backed features unavailable, distance-only ETA/eligibility fallback for Waze). Phase 9 cannot
-  be considered fully closed until this is resolved.
+- OPEN GAP: `DATABASE_SECRET_ARN` (the ARN string, not the secret values) and `WAZE_API_KEY` are not
+  yet stored in this repository's GitHub Actions Secrets. Until resolved, `deploy.yml` passes an empty
+  ARN string, `HasDatabaseSecret` evaluates false, the ECS `Secrets` block is omitted, and the service
+  runs with no DB env vars (DB-backed features fail gracefully; distance-only ETA/eligibility fallback
+  for Waze). Phase 9 cannot be considered fully closed until this is resolved.

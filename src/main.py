@@ -21,7 +21,7 @@ from src.shared.logger import logger
 async def lifespan(app: FastAPI):
     logger.info("Delivery Service starting up")
     logger.info(
-        "GPS sync scheduler configured — interval={}s (DynamoDB → Supabase courier_locations)",
+        "GPS sync scheduler configured — interval={}s (DynamoDB → Postgres courier_locations)",
         GPS_SYNC_INTERVAL_SECONDS,
     )
     logger.info(

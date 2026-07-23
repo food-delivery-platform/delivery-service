@@ -9,8 +9,11 @@ DYNAMODB_TABLE_ORDER_EVENTS = os.environ.get("DYNAMODB_TABLE_ORDER_EVENTS", "ord
 SNS_TOPIC_ARN_ORDER_EVENTS = os.environ.get("SNS_TOPIC_ARN_ORDER_EVENTS", "")
 SQS_QUEUE_URL_DELIVERY_EVENTS = os.environ.get("SQS_QUEUE_URL_DELIVERY_EVENTS", "")
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+DB_HOST = os.environ.get("DB_HOST", "")
+DB_PORT = int(os.environ.get("DB_PORT", "5432"))
+DB_NAME = os.environ.get("DB_NAME", "postgres")
+DB_USER = os.environ.get("DB_USER", "")
+DB_PASS = os.environ.get("DB_PASS", "")
 
 ORDER_SERVICE_URL = os.environ.get("ORDER_SERVICE_URL", "")
 WAZE_API_KEY = os.environ.get("WAZE_API_KEY", "")

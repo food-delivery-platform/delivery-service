@@ -61,11 +61,16 @@ override lives in the infrastructure repo's workflow input, not in this repo.
   - `SNS_TOPIC_ARN_ORDER_EVENTS`, `SQS_QUEUE_URL_DELIVERY_EVENTS`,
     `SQS_QUEUE_ARN_DELIVERY_EVENTS` (URL is used by the app; the ARN is used
     only to scope the task role's IAM policy)
-  - `SUPABASE_URL`, `ORDER_SERVICE_URL`
-  - `SUPABASE_SERVICE_ROLE_KEY`, `WAZE_API_KEY` — **OPEN GAP**: neither is
-    provisioned yet in this repo's GitHub Actions Secrets or in AWS Secrets
-    Manager. Until resolved, deploys run in a documented degraded mode
-    (Supabase calls fail, Waze falls back to distance-only ETA/eligibility).
+  - `DATABASE_SECRET_ARN` — ARN of an AWS Secrets Manager secret (JSON with
+    keys `host`, `port`, `dbname`, `username`, `password`). ECS injects the
+    five DB env vars at task launch; the actual values never pass through
+    GitHub Actions or CloudFormation parameters. The task execution role
+    is granted `secretsmanager:GetSecretValue` on this ARN automatically.
+    **OPEN GAP**: not yet stored in this repo's GitHub Actions Secrets.
+  - `ORDER_SERVICE_URL`
+  - `WAZE_API_KEY` — **OPEN GAP**: not yet provisioned in this repo's GitHub
+    Actions Secrets or in AWS Secrets Manager. Until resolved, deploys run in
+    a documented degraded mode (distance-only ETA/eligibility fallback).
 
 None of these secrets need to exist for `Dockerfile`, `infra/cloudformation.yml`,
 or the deploy workflow itself to be valid — they're only read at the moment
