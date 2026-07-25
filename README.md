@@ -464,14 +464,21 @@ as a non-root user. The container listens on port `8000`, and the health check e
 GitHub Actions publishes images to Amazon ECR repository:
 
 ```text
-delivery-service/delivery-service
+delivery-service
 ```
 
-Each push to `main` publishes an immutable tag equal to the full Git commit SHA and also updates `latest`.
-The workflow uses OIDC and requires this GitHub secret:
+Each push to `main` publishes an immutable tag equal to the full Git commit SHA and also updates `latest`:
 
 ```text
-AWS_ROLE_TO_ASSUME
+<account-id>.dkr.ecr.<region>.amazonaws.com/delivery-service:<github.sha>
+<account-id>.dkr.ecr.<region>.amazonaws.com/delivery-service:latest
+```
+
+The workflow uses OIDC and requires these GitHub Actions secrets:
+
+```text
+AWS_ROLE_ARN
+AWS_REGION
 ```
 
 ECR is assumed to already exist. ECS runtime resources, including the ECS service, task definition, load
@@ -498,7 +505,7 @@ balancer wiring, target group, security groups, and runtime CloudFormation stack
 
 | Variable | Default | Description |
 |---|---|---|
-| `AWS_REGION` | `us-east-1` | AWS region |
+| `AWS_REGION` | — | AWS region; GitHub Actions reads it from `secrets.AWS_REGION` |
 | `DYNAMODB_TABLE_DELIVERY_ASSIGNMENTS` | `delivery_assignments` | DynamoDB table name |
 | `DYNAMODB_TABLE_COURIER_STATES` | `courier_states` | DynamoDB table name |
 | `DYNAMODB_TABLE_ORDER_EVENTS` | `order_events` | DynamoDB table name |

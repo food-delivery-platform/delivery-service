@@ -12,7 +12,7 @@ permissions:
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
-  ECR_REPOSITORY: delivery-service/delivery-service
+  ECR_REPOSITORY: delivery-service
 
 jobs:
   publish-image:
