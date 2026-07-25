@@ -464,7 +464,7 @@ as a non-root user. The container listens on port `8000`, and the health check e
 GitHub Actions publishes images to Amazon ECR repository:
 
 ```text
-delivery-service
+<account-id>.dkr.ecr.<region>.amazonaws.com/delivery-service
 ```
 
 Each push to `main` publishes an immutable tag equal to the full Git commit SHA and also updates `latest`:
@@ -479,6 +479,7 @@ The workflow uses OIDC and requires these GitHub Actions secrets:
 ```text
 AWS_ROLE_ARN
 AWS_REGION
+ECR_REPOSITORY_URI
 ```
 
 ECR is assumed to already exist. ECS runtime resources, including the ECS service, task definition, load

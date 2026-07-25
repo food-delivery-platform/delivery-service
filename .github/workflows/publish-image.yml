@@ -12,7 +12,7 @@ permissions:
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
-  ECR_REPOSITORY: delivery-service
+  ECR_REPOSITORY_URI: ${{ secrets.ECR_REPOSITORY_URI }}
 
 jobs:
   publish-image:
@@ -49,12 +49,11 @@ jobs:
 
       - name: Build and push Docker image
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           set -euo pipefail
-          IMAGE_URI="$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG"
-          LATEST_URI="$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:latest"
+          IMAGE_URI="${{ env.ECR_REPOSITORY_URI }}:$IMAGE_TAG"
+          LATEST_URI="${{ env.ECR_REPOSITORY_URI }}:latest"
 
           docker build -t "$IMAGE_URI" -t "$LATEST_URI" .
           docker push "$IMAGE_URI"
