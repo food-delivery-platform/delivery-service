@@ -22,6 +22,7 @@ Handles the full delivery lifecycle for the Food Delivery Platform: GPS collecti
   - [DynamoDB Write Shapes](#dynamodb-write-shapes)
   - [CloudWatch Custom Metrics](#cloudwatch-custom-metrics)
 - [Data Stores](#data-stores)
+- [Docker and deployment](#docker-and-deployment)
 - [Scaling & Resilience](#scaling--resilience)
 - [Environment Variables](#environment-variables)
 
@@ -452,6 +453,30 @@ Namespace: `FoodDelivery/DeliveryService`.
 | DynamoDB | `delivery_assignments` | This service's own assignment/eligibility state (`eligible_courier_ids`, `assigned_courier_id`, stage) — not Order Service's `active_orders` |
 | DynamoDB | `order_events` | Immutable stage-transition audit log |
 | Supabase PostgreSQL | `courier_locations` | PostGIS geometry; batch-updated from DynamoDB every 10 min |
+
+---
+
+## Docker and deployment
+
+The service image is built from `python:3.12-slim` and runs `uvicorn src.main:app --host 0.0.0.0 --port 8000`
+as a non-root user. The container listens on port `8000`, and the health check endpoint is `GET /health`.
+
+GitHub Actions publishes images to Amazon ECR repository:
+
+```text
+delivery-service/delivery-service
+```
+
+Each push to `main` publishes an immutable tag equal to the full Git commit SHA and also updates `latest`.
+The workflow uses OIDC and requires this GitHub secret:
+
+```text
+AWS_ROLE_TO_ASSUME
+```
+
+ECR is assumed to already exist. ECS runtime resources, including the ECS service, task definition, load
+balancer wiring, target group, security groups, and runtime CloudFormation stacks, are created from the
+`food-delivery-infrastructure` repository, not from this repository.
 
 ---
 
