@@ -2,7 +2,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from src.shared.aws.dynamodb_client import get_table
 from src.shared.config.env import DYNAMODB_TABLE_COURIER_STATES, GPS_SYNC_INTERVAL_SECONDS
-from src.shared.db.supabase_client import get_client
+from src.shared.db.supabase_client import get_connection
 from src.shared.logger import logger
 from src.shared.metrics import cloudwatch
 
@@ -10,9 +10,9 @@ _scheduler: AsyncIOScheduler | None = None
 
 
 def sync_once() -> int:
-    """Full scan of courier_states -> batch upsert Supabase courier_locations (PostGIS), via an
-    `upsert_courier_locations(rows)` RPC — like nearest_couriers, this RPC and the underlying
-    table don't exist in database_rel yet (real, currently-open cross-repo gap).
+    """Full scan of courier_states -> batch upsert `courier_locations` (PostGIS), via an
+    `upsert_courier_locations(rows)` Postgres function — like nearest_couriers, this function
+    and the underlying table don't exist in database_rel yet (real, currently-open cross-repo gap).
 
     A full scan every GPS_SYNC_INTERVAL_SECONDS (default 10 min) is the pragmatic MVP approach:
     GSI_couriers_by_status doesn't index on updatedAt globally, so an incremental "changed since
@@ -40,7 +40,8 @@ def sync_once() -> int:
         logger.debug("GPS sync: no courier locations to sync")
         return 0
 
-    get_client().rpc("upsert_courier_locations", {"rows": rows}).execute()
+    with get_connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT upsert_courier_locations(%s)", (rows,))
     logger.info("GPS sync complete | couriers_synced={}", len(rows))
     return len(rows)
 

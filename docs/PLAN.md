@@ -41,6 +41,11 @@ Verify this snapshot is still accurate before starting — grep `# TODO` in `src
 **Goal:** make `shared/aws/dynamodb_client.py`, `shared/aws/sns_client.py`, `shared/aws/sqs_client.py`,
 and `shared/db/supabase_client.py` real, thin wrappers other modules can import.
 
+> **Open migration:** `docs/TASK.md` tracks replacing `supabase_client.py` (PostgREST over
+> `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`) with a direct Postgres client driven by
+> `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASS`. Not started yet — the `supabase_client.py`
+> description below still reflects the current (pre-migration) state.
+
 - `dynamodb_client.py`: boto3 resource/client factory reading `AWS_REGION` from `shared/config/env.py`;
   expose `get_table(name: str)` returning a `Table` resource. No business logic here.
 - `sns_client.py`: boto3 SNS client + a `publish(topic_arn: str, subject: str, message: dict)` helper that
@@ -49,7 +54,8 @@ and `shared/db/supabase_client.py` real, thin wrappers other modules can import.
   breaking change (optional kwargs).
 - `sqs_client.py`: boto3 SQS client + `receive_messages(queue_url, max_messages, wait_seconds)` and
   `delete_message(queue_url, receipt_handle)` wrappers.
-- `supabase_client.py`: `supabase-py` client factory from `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY`.
+- `shared/db/supabase_client.py` (now a direct Postgres client — see `docs/TASK.md`; the
+  original `supabase-py` factory has been replaced with `psycopg_pool.ConnectionPool`).
 - Add `shared/errors/app_error.py` usage consistently (it exists — check it's actually raised/caught, not
   just defined) and a FastAPI exception handler in `main.py` that maps `AppError` → the `api_response.py`
   error envelope.
